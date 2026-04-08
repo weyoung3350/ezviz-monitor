@@ -1,3 +1,8 @@
+"""监控编排主流程。
+
+规则驱动：摄像头 + 时段 + 目标人物命中 → 电话告警 + 证据保存 + 终端日志。
+"""
+
 import logging
 import time
 from collections import deque
@@ -8,10 +13,11 @@ import cv2
 import numpy as np
 
 from src.alerts import AlertCooldown
-from src.config import AppConfig, CameraConfig
+from src.config import AppConfig, CameraConfig, MonitorRule
 from src.evidence import enforce_evidence_quota
 from src.face_registry import FaceDirectoryScan
 from src.notifier import print_alert
+from src.phone_alert import PhoneAlertClient, PhoneAlertEvent, create_phone_alert_client
 from src.scheduler import is_in_schedule
 from src.stream import StreamState, should_retry_connect
 from src.vision import PersonHitWindow
@@ -19,13 +25,18 @@ from src.vision import PersonHitWindow
 logger = logging.getLogger(__name__)
 
 
-def should_alert_for_detection(
+# --- 规则触发判断 ---
+
+def should_trigger_rule(
     in_schedule: bool,
-    stranger_event: bool,
+    target_hit: bool,
     cooldown_allows: bool,
 ) -> bool:
-    return in_schedule and stranger_event and cooldown_allows
+    """判断是否应触发一条监护规则。三个条件全部满足才触发。"""
+    return in_schedule and target_hit and cooldown_allows
 
+
+# --- 帧缓冲 ---
 
 class FrameBuffer:
     """环形帧缓冲区，保存最近 N 秒的帧用于告警前视频。"""
@@ -45,6 +56,8 @@ class FrameBuffer:
     def fps(self) -> float:
         return self._fps
 
+
+# --- 证据保存 ---
 
 def _save_snapshot(frame: np.ndarray, evidence_dir: Path, camera_name: str, now: datetime) -> Path:
     cam_dir = evidence_dir / camera_name
@@ -86,61 +99,61 @@ def _save_clip(
     return path
 
 
+# --- 人形检测 ---
+
 def _try_detect_person(frame: np.ndarray, person_detector) -> bool:
-    """检测画面中是否有人。使用 HOG 人形检测器。"""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    # 缩小图片以提高检测速度
     small = cv2.resize(gray, (0, 0), fx=0.5, fy=0.5)
     rects, _ = person_detector.detectMultiScale(
-        small,
-        winStride=(8, 8),
-        padding=(4, 4),
-        scale=1.05,
+        small, winStride=(8, 8), padding=(4, 4), scale=1.05,
     )
     return len(rects) > 0
 
 
-def _try_recognize_family(
+# --- 人脸识别：返回人名或 None ---
+
+def _try_identify_person(
     frame: np.ndarray,
     known_encodings: list[tuple[str, np.ndarray]],
-) -> bool | None:
-    """尝试人脸识别。返回 True=家人, False=陌生人, None=未检测到人脸。"""
+) -> str | None:
+    """尝试人脸识别，返回识别到的人名。未检测到人脸或无匹配时返回 None。"""
     import face_recognition
 
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    # 缩小以提高速度
-    small = cv2.resize(rgb, (0, 0), fx=0.5, fy=0.5)
-    face_locations = face_recognition.face_locations(small, model="hog")
+    face_locations = face_recognition.face_locations(rgb, model="hog")
 
     if not face_locations:
         return None
 
-    face_encodings = face_recognition.face_encodings(small, face_locations)
+    face_encodings = face_recognition.face_encodings(rgb, face_locations)
 
     for encoding in face_encodings:
         for name, known_enc in known_encodings:
             matches = face_recognition.compare_faces([known_enc], encoding, tolerance=0.6)
             if matches[0]:
-                logger.debug("识别到家人: %s", name)
-                return True
+                logger.debug("识别到人物: %s", name)
+                return name
 
-    return False
+    logger.debug("检测到人脸但未匹配已知人物")
+    return None
 
+
+# --- 依赖检查 ---
 
 def ensure_face_recognition_available() -> None:
-    """检查 face_recognition 库是否可用。不可用时抛出 ImportError。"""
     try:
         import face_recognition  # noqa: F401
     except ImportError:
         raise ImportError(
-            "face_recognition 未安装。需求要求区分家人与陌生人，此依赖为必需项。\n"
+            "face_recognition 未安装。需求要求人物识别能力，此依赖为必需项。\n"
             "安装方式: pip install face_recognition\n"
             "如需编译 dlib: brew install cmake && pip install dlib face_recognition"
         )
 
 
+# --- 人脸编码加载 ---
+
 def _load_face_encodings(scan: FaceDirectoryScan, faces_dir: Path) -> list[tuple[str, np.ndarray]]:
-    """加载家人照片的人脸编码。face_recognition 必须已安装。"""
     import face_recognition
 
     encodings = []
@@ -163,23 +176,34 @@ def _load_face_encodings(scan: FaceDirectoryScan, faces_dir: Path) -> list[tuple
     return encodings
 
 
+# --- 主监控循环 ---
+
 def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirectoryScan) -> None:
-    """主监控循环。"""
     ensure_face_recognition_available()
     logger.info("启动监控: 摄像头=%s RTSP=%s", camera.name, camera.rtsp_url)
+
+    if not camera.monitor_rules:
+        logger.warning("摄像头 '%s' 没有配置 monitor_rules，将仅拉流不触发告警", camera.name)
 
     evidence_dir = Path(config.evidence_dir)
     evidence_dir.mkdir(parents=True, exist_ok=True)
     faces_dir = Path(config.faces_dir)
 
-    # 初始化组件
-    cooldown = AlertCooldown(minutes=config.alert.cooldown_minutes)
-    # TODO(T16): 完整重构主流程时接入规则驱动的人物识别
-    decision_window = PersonHitWindow(
-        target_name="杨孝治",
-        frame_threshold=config.alert.person_frames_threshold,
-        window_seconds=config.alert.person_window_seconds,
-    )
+    # 初始化电话告警客户端
+    phone_client = create_phone_alert_client(config.phone_alert)
+
+    # 为每条规则创建独立的 PersonHitWindow 和冷却
+    rule_windows: dict[str, PersonHitWindow] = {}
+    rule_cooldowns: dict[str, AlertCooldown] = {}
+    for rule in camera.monitor_rules:
+        rule_windows[rule.rule_name] = PersonHitWindow(
+            target_name=rule.person_name,
+            frame_threshold=config.alert.person_frames_threshold,
+            window_seconds=config.alert.person_window_seconds,
+        )
+        rule_cooldowns[rule.rule_name] = AlertCooldown(minutes=config.alert.cooldown_minutes)
+        logger.info("已加载规则: %s (目标=%s)", rule.rule_name, rule.person_name)
+
     frame_buffer = FrameBuffer(max_seconds=config.video.pre_seconds)
     person_detector = cv2.HOGDescriptor()
     person_detector.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
@@ -189,15 +213,12 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
     reconnect_interval = config.stream.reconnect_interval_seconds
     post_seconds = config.video.post_seconds
 
-    schedules = [{"start": s.start, "end": s.end} for s in camera.alert_schedules]
-
     stream_state = StreamState(last_error_at=0.0, reconnect_interval_seconds=reconnect_interval)
     cap: cv2.VideoCapture | None = None
 
-    # 采样间隔控制：不需要每帧都分析
-    analysis_fps = 2.0  # 每秒分析 2 帧
+    analysis_fps = 2.0
     last_analysis_time = 0.0
-    buffer_fps = 10.0  # 缓冲区以 10fps 录帧
+    buffer_fps = 10.0
 
     try:
         while True:
@@ -229,10 +250,8 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
             now_mono = time.monotonic()
             now_dt = datetime.now()
 
-            # 缓冲帧（用于告警前视频）
             frame_buffer.add(now_mono, frame)
 
-            # 采样控制
             if now_mono - last_analysis_time < 1.0 / analysis_fps:
                 continue
             last_analysis_time = now_mono
@@ -240,77 +259,88 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
             # 第一阶段：人形检测
             has_person = _try_detect_person(frame, person_detector)
             if not has_person:
-                decision_window.record(None, now_mono)
+                for w in rule_windows.values():
+                    w.record(None, now_mono)
                 continue
 
-            # 第二阶段：人脸识别
-            # TODO(T16): 完整重构为目标人物识别链路
-            face_result = _try_recognize_family(frame, known_encodings)
+            # 第二阶段：人脸识别 → 人名
+            identified_name = _try_identify_person(frame, known_encodings)
 
-            # face_result: True=家人, False=陌生人脸, None=未检测到人脸
-            # 临时适配：识别到的人名传入 decision_window
-            # T16 会把 _try_recognize_family 改为返回人名
-            identified_name: str | None = None
-            if face_result is True:
-                identified_name = "_家人"  # 非目标人物
-            elif face_result is False:
-                identified_name = None  # 陌生人脸，不确定身份
+            if identified_name is None:
+                logger.debug("检测到人形但未识别身份，记录为不确定")
 
-            is_target_hit = decision_window.record(identified_name, now_mono)
+            # 第三阶段：对每条规则做投票和触发判断
+            for rule in camera.monitor_rules:
+                window = rule_windows[rule.rule_name]
+                cooldown = rule_cooldowns[rule.rule_name]
 
-            if not is_target_hit:
-                continue
+                target_hit = window.record(identified_name, now_mono)
 
-            # 检查时段和冷却
-            in_schedule = is_in_schedule(schedules, now_dt)
-            cooldown_allows = cooldown.should_trigger(camera.name, now_dt)
+                if not target_hit:
+                    continue
 
-            if not should_alert_for_detection(in_schedule, is_stranger_event, cooldown_allows):
-                if not in_schedule:
-                    logger.debug("非告警时段，不输出告警")
-                elif not cooldown_allows:
-                    logger.debug("告警冷却中，不输出新告警")
-                continue
+                schedules = [{"start": s.start, "end": s.end} for s in rule.alert_schedules]
+                in_schedule = is_in_schedule(schedules, now_dt)
+                cooldown_allows = cooldown.should_trigger(camera.name, now_dt)
 
-            # 触发告警
-            cooldown.record(camera.name, now_dt)
+                if not should_trigger_rule(in_schedule, target_hit, cooldown_allows):
+                    if not in_schedule:
+                        logger.debug("规则 '%s' 命中但非告警时段", rule.rule_name)
+                    elif not cooldown_allows:
+                        logger.debug("规则 '%s' 命中但在冷却期内", rule.rule_name)
+                    continue
 
-            # 保存截图
-            snapshot_path = _save_snapshot(frame, evidence_dir, camera.name, now_dt)
+                # --- 触发告警 ---
+                cooldown.record(camera.name, now_dt)
+                logger.info("规则触发: %s (人物=%s 摄像头=%s)", rule.rule_name, rule.person_name, camera.name)
 
-            # 快照告警前帧（在收集告警后帧之前，避免重复）
-            pre_frames = frame_buffer.get_frames()
+                # 1. 电话告警
+                phone_result_text = "未配置"
+                if "phone_call" in rule.actions:
+                    phone_event = PhoneAlertEvent(
+                        person_name=rule.person_name,
+                        camera_name=camera.name,
+                        rule_name=rule.rule_name,
+                        event_time=now_dt,
+                    )
+                    phone_result = phone_client.call(phone_event)
+                    if phone_result.success:
+                        phone_result_text = "拨打成功"
+                    else:
+                        phone_result_text = f"拨打失败: {phone_result.error}"
+                        logger.error("电话告警失败: %s", phone_result.error)
 
-            # 收集告警后帧（不写入 frame_buffer，避免与 pre_frames 重复）
-            post_frames: list[tuple[float, np.ndarray]] = []
-            post_start = time.monotonic()
-            while time.monotonic() - post_start < post_seconds:
-                if cap is None or not cap.isOpened():
-                    break
-                ret2, frame2 = cap.read()
-                if not ret2:
-                    break
-                post_frames.append((time.monotonic(), frame2))
+                # 2. 证据保存（无论电话是否成功）
+                snapshot_path = _save_snapshot(frame, evidence_dir, camera.name, now_dt)
+                pre_frames = frame_buffer.get_frames()
 
-            # 保存短视频（pre_frames + post_frames，无重复）
-            clip_path = _save_clip(
-                pre_frames,
-                post_frames,
-                evidence_dir,
-                camera.name,
-                now_dt,
-                fps=buffer_fps,
-            )
+                post_frames: list[tuple[float, np.ndarray]] = []
+                post_start = time.monotonic()
+                while time.monotonic() - post_start < post_seconds:
+                    if cap is None or not cap.isOpened():
+                        break
+                    ret2, frame2 = cap.read()
+                    if not ret2:
+                        break
+                    post_frames.append((time.monotonic(), frame2))
 
-            # 输出文字告警
-            print_alert(
-                camera_name=camera.name,
-                event_time=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                evidence_path=str(clip_path),
-            )
+                clip_path = _save_clip(
+                    pre_frames, post_frames, evidence_dir, camera.name, now_dt, fps=buffer_fps,
+                )
 
-            # 证据配额清理
-            enforce_evidence_quota(evidence_dir, max_evidence_bytes)
+                # 3. 终端日志
+                if "terminal_log" in rule.actions:
+                    print_alert(
+                        camera_name=camera.name,
+                        event_time=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        person_name=rule.person_name,
+                        rule_name=rule.rule_name,
+                        evidence_path=str(clip_path),
+                        phone_result=phone_result_text,
+                    )
+
+                # 4. 证据配额清理
+                enforce_evidence_quota(evidence_dir, max_evidence_bytes)
 
     except KeyboardInterrupt:
         logger.info("收到 Ctrl+C，正在退出...")
@@ -320,26 +350,45 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
         logger.info("监控已停止: %s", camera.name)
 
 
+# --- 启动检查 ---
+
 def run_check(config: AppConfig, camera: CameraConfig, face_scan: FaceDirectoryScan) -> bool:
-    """启动检查模式：校验配置和连接，不进入持续监控循环。"""
     ensure_face_recognition_available()
     logger.info("=== 启动检查模式 ===")
     ok = True
 
-    # 检查配置
     logger.info("摄像头: %s", camera.name)
     logger.info("RTSP: %s", camera.rtsp_url)
-    logger.info("告警时段: %s", [{"start": s.start, "end": s.end} for s in camera.alert_schedules])
+
+    # 规则检查
+    if camera.monitor_rules:
+        for rule in camera.monitor_rules:
+            schedules = [{"start": s.start, "end": s.end} for s in rule.alert_schedules]
+            logger.info("规则: %s (目标=%s 时段=%s 动作=%s)",
+                        rule.rule_name, rule.person_name, schedules, rule.actions)
+    else:
+        logger.warning("摄像头 '%s' 没有配置 monitor_rules", camera.name)
+
     logger.info("证据目录: %s", config.evidence_dir)
     logger.info("最大证据容量: %d GB", config.storage.max_evidence_size_gb)
 
-    # 检查人脸库
-    logger.info("家人人脸库: %s", face_scan.people)
+    # 人脸库检查
+    logger.info("人脸库: %s", face_scan.people)
     if face_scan.warnings:
         for w in face_scan.warnings:
             logger.warning("人脸库警告: %s", w)
 
-    # 检查 RTSP 连接
+    # 电话告警检查
+    pa = config.phone_alert
+    logger.info("电话告警: provider=%s enabled=%s", pa.provider, pa.enabled)
+    try:
+        client = create_phone_alert_client(pa)
+        logger.info("电话告警客户端初始化成功: %s", type(client).__name__)
+    except Exception as e:
+        logger.error("电话告警客户端初始化失败: %s", e)
+        ok = False
+
+    # RTSP 连接检查
     logger.info("正在测试 RTSP 连接...")
     cap = cv2.VideoCapture(camera.rtsp_url, cv2.CAP_FFMPEG)
     if cap.isOpened():
@@ -355,7 +404,7 @@ def run_check(config: AppConfig, camera: CameraConfig, face_scan: FaceDirectoryS
         logger.error("RTSP 连接失败: %s", camera.rtsp_url)
         ok = False
 
-    # 检查证据目录
+    # 证据目录
     evidence_dir = Path(config.evidence_dir)
     evidence_dir.mkdir(parents=True, exist_ok=True)
     logger.info("证据目录已就绪: %s", evidence_dir.resolve())

@@ -1,48 +1,51 @@
 from src.notifier import format_alert_message
 
 
-def test_format_alert_message_includes_alert_prefix():
-    message = format_alert_message(
-        camera_name="客厅",
-        event_time="2026-04-08 23:15:02",
-        evidence_path="./evidence/客厅/2026-04-08_23-15-02_clip.mp4",
-    )
-    assert "[告警]" in message
+_COMMON_ARGS = dict(
+    camera_name="电梯厅",
+    event_time="2026-04-08 23:15:02",
+    person_name="杨孝治",
+    rule_name="杨孝治夜间外出监护",
+    evidence_path="./evidence/电梯厅/2026-04-08_23-15-02_clip.mp4",
+    phone_result="拨打成功",
+)
 
 
-def test_format_alert_message_includes_camera_name():
-    message = format_alert_message(
-        camera_name="客厅",
-        event_time="2026-04-08 23:15:02",
-        evidence_path="./evidence/客厅/2026-04-08_23-15-02_clip.mp4",
-    )
-    assert "客厅" in message
+def test_includes_alert_prefix():
+    msg = format_alert_message(**_COMMON_ARGS)
+    assert "[告警]" in msg
 
 
-def test_format_alert_message_includes_timestamp():
-    message = format_alert_message(
-        camera_name="大门",
-        event_time="2026-04-08 23:15:02",
-        evidence_path="./evidence/大门/2026-04-08_23-15-02_clip.mp4",
-    )
-    assert "2026-04-08 23:15:02" in message
+def test_includes_person_name():
+    msg = format_alert_message(**_COMMON_ARGS)
+    assert "杨孝治" in msg
 
 
-def test_format_alert_message_includes_evidence_path():
-    path = "./evidence/客厅/2026-04-08_23-15-02_clip.mp4"
-    message = format_alert_message(
-        camera_name="客厅",
-        event_time="2026-04-08 23:15:02",
-        evidence_path=path,
-    )
-    assert path in message
+def test_includes_rule_name():
+    msg = format_alert_message(**_COMMON_ARGS)
+    assert "杨孝治夜间外出监护" in msg
 
 
-def test_format_alert_message_is_visually_distinct():
-    message = format_alert_message(
-        camera_name="客厅",
-        event_time="2026-04-08 23:15:02",
-        evidence_path="./evidence/客厅/2026-04-08_23-15-02_clip.mp4",
-    )
-    # 告警文本应有分隔线或醒目标记
-    assert "=" in message or "!" in message or "★" in message or "▶" in message
+def test_includes_camera_name():
+    msg = format_alert_message(**_COMMON_ARGS)
+    assert "电梯厅" in msg
+
+
+def test_includes_timestamp():
+    msg = format_alert_message(**_COMMON_ARGS)
+    assert "2026-04-08 23:15:02" in msg
+
+
+def test_includes_evidence_path():
+    msg = format_alert_message(**_COMMON_ARGS)
+    assert "./evidence/电梯厅/2026-04-08_23-15-02_clip.mp4" in msg
+
+
+def test_includes_phone_result():
+    msg = format_alert_message(**_COMMON_ARGS)
+    assert "拨打成功" in msg
+
+
+def test_is_visually_distinct():
+    msg = format_alert_message(**_COMMON_ARGS)
+    assert "=" in msg
