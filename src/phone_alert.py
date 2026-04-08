@@ -34,9 +34,13 @@ class PhoneAlertResult:
 
 
 class PhoneAlertClient:
-    """电话告警客户端接口。所有实现必须提供 call 方法。"""
+    """电话告警客户端接口。所有实现必须提供 call 和 readiness_status 方法。"""
 
     def call(self, event: PhoneAlertEvent) -> PhoneAlertResult:
+        raise NotImplementedError
+
+    def readiness_status(self) -> str:
+        """返回当前客户端的就绪状态描述，用于 --check 输出。"""
         raise NotImplementedError
 
 
@@ -54,6 +58,9 @@ class AliyunVmsClient(PhoneAlertClient):
             raise ValueError("AliyunVmsClient: called_numbers 不能为空")
         self._template_code = template_code
         self._called_numbers = called_numbers
+
+    def readiness_status(self) -> str:
+        return "客户端可初始化，但阿里云 VMS SDK 尚未接入，当前不能真实拨打"
 
     def call(self, event: PhoneAlertEvent) -> PhoneAlertResult:
         """发起真实电话告警。
@@ -80,6 +87,9 @@ class MockPhoneAlertClient(PhoneAlertClient):
         self._should_succeed = should_succeed
         self._error_message = error_message
         self.call_history: list[PhoneAlertEvent] = []
+
+    def readiness_status(self) -> str:
+        return "Mock 客户端，仅用于测试"
 
     def call(self, event: PhoneAlertEvent) -> PhoneAlertResult:
         self.call_history.append(event)

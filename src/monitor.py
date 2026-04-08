@@ -386,7 +386,7 @@ def run_check(config: AppConfig, camera: CameraConfig, face_scan: FaceDirectoryS
     logger.info("电话告警: provider=%s enabled=%s", pa.provider, pa.enabled)
     try:
         client = create_phone_alert_client(pa)
-        logger.info("电话告警客户端初始化成功: %s", type(client).__name__)
+        logger.info("电话告警: %s", client.readiness_status())
     except Exception as e:
         logger.error("电话告警客户端初始化失败: %s", e)
         ok = False
