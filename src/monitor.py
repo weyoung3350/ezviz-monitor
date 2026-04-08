@@ -232,11 +232,14 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
     buffer_fps = 10.0
 
     # 状态面板
+    from src.evidence import get_directory_size
     rule_names = ", ".join(r.rule_name for r in camera.monitor_rules) or "无"
+    initial_evidence_mb = get_directory_size(evidence_dir) / (1024 * 1024)
     status = StatusData(
         camera_name=camera.name,
         rule_name=rule_names,
         phone_status=phone_client.readiness_status(),
+        evidence_size_mb=initial_evidence_mb,
     )
     panel = StatusPanel(status)
     panel.start()

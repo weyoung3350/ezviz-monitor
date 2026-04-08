@@ -2,13 +2,20 @@
 
 使用纯 ANSI 转义序列在终端底部重绘固定区域，不引入新依赖。
 monitor 主循环只需更新 StatusData，StatusPanel 负责渲染。
+
+TTY 降级：当 stderr 不是 TTY 时，不输出任何 ANSI 控制字符，
+改为低频纯文本心跳（每 30 秒一行）。
 """
 
 import sys
 import time
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+
+
+def is_tty() -> bool:
+    """检查 stderr 是否是 TTY。"""
+    return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
 
 
 @dataclass
@@ -53,20 +60,34 @@ def render_status(data: StatusData) -> str:
     return "\n".join(lines)
 
 
-# ANSI 控制：光标上移 N 行 + 清行
-_CURSOR_UP = "\033[A"
-_CLEAR_LINE = "\033[2K"
+def render_heartbeat(data: StatusData) -> str:
+    """非 TTY 模式下的单行心跳文本（无 ANSI）。"""
+    elapsed = format_duration(time.monotonic() - data.start_time)
+    return (
+        f"[心跳] {elapsed} | RTSP={data.rtsp_status} | "
+        f"帧={data.frames_analyzed} | 识别={data.last_identity} | "
+        f"告警={data.last_alert_time} | 证据={data.evidence_size_mb:.1f}MB"
+    )
 
 
 class StatusPanel:
-    """后台线程驱动的终端状态面板。"""
+    """后台线程驱动的终端状态面板。
+
+    TTY 模式：每秒 ANSI 原地刷新。
+    非 TTY 模式：每 30 秒输出一行纯文本心跳。
+    """
 
     def __init__(self, data: StatusData, interval: float = 1.0) -> None:
         self._data = data
-        self._interval = interval
+        self._tty = is_tty()
+        self._interval = interval if self._tty else 30.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lines_printed = 0
+
+    @property
+    def tty_mode(self) -> bool:
+        return self._tty
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -83,16 +104,26 @@ class StatusPanel:
             self._stop.wait(self._interval)
 
     def _draw(self) -> None:
+        if self._tty:
+            self._draw_ansi()
+        else:
+            self._draw_heartbeat()
+
+    def _draw_ansi(self) -> None:
         text = render_status(self._data)
         lines = text.split("\n")
         n = len(lines)
 
-        # 如果之前打印过，光标上移覆盖
         if self._lines_printed > 0:
             sys.stderr.write(f"\033[{self._lines_printed}A")
 
         for line in lines:
-            sys.stderr.write(f"{_CLEAR_LINE}{line}\n")
+            sys.stderr.write(f"\033[2K{line}\n")
 
         sys.stderr.flush()
         self._lines_printed = n
+
+    def _draw_heartbeat(self) -> None:
+        text = render_heartbeat(self._data)
+        sys.stderr.write(text + "\n")
+        sys.stderr.flush()
