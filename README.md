@@ -1,96 +1,98 @@
-# 萤石摄像头智能监控告警系统
+# 萤石摄像头老人夜间外出监护告警系统
 
-在 Mac 本机通过 RTSP 协议接入萤石摄像头，识别家人与陌生人，在告警时段内检测到陌生人时输出命令行文字告警，并保存截图和短视频证据。
+在 Mac 本机通过 RTSP 协议接入萤石摄像头，重点监护老人"杨孝治"是否在指定时段出现在"电梯厅"画面中；命中后触发电话告警并保存截图和短视频证据。
 
-## 环境准备
+> **当前状态**：阿里云 VMS 电话告警 SDK 尚未接入，`AliyunVmsClient` 为骨架实现，调用时返回失败。真实电话拨打能力需后续接入 SDK 后才可用。证据保存和终端日志不受影响。
 
-### Python 依赖
+## 当前目标
+
+当前一期目标不是通用陌生人告警，而是：
+
+- 单机运行
+- 单摄像头监控
+- RTSP 拉流
+- 重点人物识别：`杨孝治`
+- 重点摄像头：`电梯厅`
+- 重点时段：夜间与清晨，以配置为准
+- 电话告警（SDK 待接入）
+- 本地日志输出
+- 截图与短视频证据留存
+- 证据目录磁盘上限控制
+
+## 依赖
+
+`face_recognition` 和 `Pillow` 是必需依赖。如果安装失败，先安装编译工具：
 
 ```bash
-# 需要 Python 3.11+
+xcode-select --install
+brew install cmake
+python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
-`face_recognition` 是必需依赖（用于区分家人与陌生人）。如果安装失败，先安装编译工具：
+如果 `face_recognition` 与 `setuptools` 版本不兼容，优先按项目文档中的风险说明处理。
+
+## 配置
+
+核心配置位于 `config.yaml`，当前应至少包含：
+
+- `电梯厅` 摄像头 RTSP 地址
+- `杨孝治夜间外出监护` 规则
+- 电话告警配置
+- 证据目录上限
+
+详细结构见 [docs/需求文档.md](docs/需求文档.md)。
+
+## 启动检查
 
 ```bash
-brew install cmake
-pip install dlib face_recognition
+python main.py --camera 电梯厅 --check
 ```
 
-### FFmpeg（可选，建议安装以获得更好的 RTSP 兼容性）
+预期至少看到：
+
+- 配置加载成功
+- 指定摄像头存在
+- RTSP 连通性检查结果
+- 杨孝治样本目录检查结果
+- 电话告警状态（当前会输出"SDK 尚未接入，不能真实拨打"）
+
+## 启动监控
 
 ```bash
-brew install ffmpeg
+python main.py --camera 电梯厅
 ```
 
-## 快速开始
+## 目录说明
 
-### 1. 准备配置文件
-
-```bash
-cp config.example.yaml config.yaml
-# 编辑 config.yaml，填入实际的 RTSP 地址和告警时段
-```
-
-### 2. 准备家人照片
-
-```bash
-mkdir -p known_faces/爸爸 known_faces/妈妈
-# 将每人 3-5 张照片放入对应目录
-```
-
-### 3. 启动检查
-
-```bash
-python main.py --camera 客厅 --check
-```
-
-启动检查模式会验证：
-- 配置文件是否正确
-- 指定摄像头是否存在
-- 人脸库是否有效
-- RTSP 连接是否可用
-
-### 4. 启动监控
-
-```bash
-python main.py --camera 客厅
-```
-
-按 `Ctrl+C` 优雅退出。
-
-## 命令行参数
-
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `--camera` | 是 | 要监控的摄像头名称 |
-| `--check` | 否 | 仅做启动检查 |
-| `--config` | 否 | 配置文件路径（默认 `config.yaml`） |
-
-## 运行测试
-
-```bash
-pytest -q
-```
-
-## 项目结构
-
-```
-main.py                 # 程序入口
-config.yaml             # 配置文件（需自行创建）
-config.example.yaml     # 配置示例
-known_faces/            # 家人照片目录
-evidence/               # 告警证据目录
+```text
+main.py
+config.yaml
+known_faces/
+  杨孝治/
+  杨为意/
+  谈凤/
+  杨一帆/
+evidence/
 src/
-  config.py             # 配置加载与校验
-  scheduler.py          # 告警时段判断
-  evidence.py           # 证据磁盘配额清理
-  face_registry.py      # 家人人脸目录扫描
-  stream.py             # 视频流重连控制
-  alerts.py             # 告警冷却策略
-  notifier.py           # 命令行文字告警输出
-  vision.py             # 陌生人事件聚合
-  monitor.py            # 监控编排主流程
-tests/                  # 自动化测试
+  config.py
+  scheduler.py
+  face_registry.py
+  stream.py
+  evidence.py
+  alerts.py
+  notifier.py
+  vision.py
+  phone_alert.py
+  monitor.py
+tests/
+docs/
 ```
+
+## 文档
+
+- [需求文档](docs/需求文档.md)
+- [实现计划](docs/plans/2026-04-08-萤石摄像头告警系统实现计划.md)
+- [自测清单](docs/自测清单.md)
+- [任务清单](docs/任务清单.md)
+- [验收测试方案](docs/验收测试方案.md)
