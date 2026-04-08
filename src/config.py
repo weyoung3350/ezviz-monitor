@@ -12,6 +12,18 @@ class AlertSchedule(BaseModel):
     start: str
     end: str
 
+    @field_validator("start", "end")
+    @classmethod
+    def validate_time_format(cls, v: str) -> str:
+        import re
+        if not re.fullmatch(r"\d{2}:\d{2}", v):
+            raise ValueError(f"时间格式必须为 HH:MM，实际值: {v!r}")
+        parts = v.split(":")
+        hour, minute = int(parts[0]), int(parts[1])
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(f"时间值超出范围: {v!r}（时 0-23，分 0-59）")
+        return v
+
 
 class CameraConfig(BaseModel):
     name: str

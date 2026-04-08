@@ -117,6 +117,42 @@ cameras:
         load_config(config_file)
 
 
+def test_invalid_time_format_raises(tmp_path: Path):
+    config_text = VALID_CONFIG.replace('start: "22:00"', 'start: "abc"')
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="HH:MM"):
+        load_config(config_file)
+
+
+def test_time_out_of_range_raises(tmp_path: Path):
+    config_text = VALID_CONFIG.replace('start: "22:00"', 'start: "25:00"')
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="超出范围"):
+        load_config(config_file)
+
+
+def test_time_without_leading_zero_raises(tmp_path: Path):
+    config_text = VALID_CONFIG.replace('start: "22:00"', 'start: "9:00"')
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="HH:MM"):
+        load_config(config_file)
+
+
+def test_minute_out_of_range_raises(tmp_path: Path):
+    config_text = VALID_CONFIG.replace('end: "07:00"', 'end: "07:60"')
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="超出范围"):
+        load_config(config_file)
+
+
 def test_cross_day_schedule_in_config(tmp_path: Path):
     config_file = tmp_path / "config.yaml"
     config_file.write_text(VALID_CONFIG, encoding="utf-8")
