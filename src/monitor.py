@@ -105,11 +105,7 @@ def _try_recognize_family(
     known_encodings: list[tuple[str, np.ndarray]],
 ) -> bool | None:
     """尝试人脸识别。返回 True=家人, False=陌生人, None=未检测到人脸。"""
-    try:
-        import face_recognition
-    except ImportError:
-        logger.debug("face_recognition 未安装，跳过人脸识别")
-        return None
+    import face_recognition
 
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     # 缩小以提高速度
@@ -131,13 +127,21 @@ def _try_recognize_family(
     return False
 
 
-def _load_face_encodings(scan: FaceDirectoryScan, faces_dir: Path) -> list[tuple[str, np.ndarray]]:
-    """加载家人照片的人脸编码。"""
+def ensure_face_recognition_available() -> None:
+    """检查 face_recognition 库是否可用。不可用时抛出 ImportError。"""
     try:
-        import face_recognition
+        import face_recognition  # noqa: F401
     except ImportError:
-        logger.warning("face_recognition 未安装，将无法进行人脸识别（所有有人画面均视为陌生人）")
-        return []
+        raise ImportError(
+            "face_recognition 未安装。需求要求区分家人与陌生人，此依赖为必需项。\n"
+            "安装方式: pip install face_recognition\n"
+            "如需编译 dlib: brew install cmake && pip install dlib face_recognition"
+        )
+
+
+def _load_face_encodings(scan: FaceDirectoryScan, faces_dir: Path) -> list[tuple[str, np.ndarray]]:
+    """加载家人照片的人脸编码。face_recognition 必须已安装。"""
+    import face_recognition
 
     encodings = []
     for person_name in scan.people:
@@ -161,6 +165,7 @@ def _load_face_encodings(scan: FaceDirectoryScan, faces_dir: Path) -> list[tuple
 
 def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirectoryScan) -> None:
     """主监控循环。"""
+    ensure_face_recognition_available()
     logger.info("启动监控: 摄像头=%s RTSP=%s", camera.name, camera.rtsp_url)
 
     evidence_dir = Path(config.evidence_dir)
@@ -268,7 +273,10 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
             # 保存截图
             snapshot_path = _save_snapshot(frame, evidence_dir, camera.name, now_dt)
 
-            # 收集告警后帧
+            # 快照告警前帧（在收集告警后帧之前，避免重复）
+            pre_frames = frame_buffer.get_frames()
+
+            # 收集告警后帧（不写入 frame_buffer，避免与 pre_frames 重复）
             post_frames: list[tuple[float, np.ndarray]] = []
             post_start = time.monotonic()
             while time.monotonic() - post_start < post_seconds:
@@ -278,11 +286,10 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
                 if not ret2:
                     break
                 post_frames.append((time.monotonic(), frame2))
-                frame_buffer.add(time.monotonic(), frame2)
 
-            # 保存短视频
+            # 保存短视频（pre_frames + post_frames，无重复）
             clip_path = _save_clip(
-                frame_buffer.get_frames(),
+                pre_frames,
                 post_frames,
                 evidence_dir,
                 camera.name,
@@ -310,6 +317,7 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
 
 def run_check(config: AppConfig, camera: CameraConfig, face_scan: FaceDirectoryScan) -> bool:
     """启动检查模式：校验配置和连接，不进入持续监控循环。"""
+    ensure_face_recognition_available()
     logger.info("=== 启动检查模式 ===")
     ok = True
 
