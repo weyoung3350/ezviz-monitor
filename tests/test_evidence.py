@@ -2,10 +2,11 @@ import os
 import time
 from pathlib import Path
 
-from src.evidence import enforce_evidence_quota, get_directory_size
+from src.evidence import enforce_evidence_quota, get_directory_size, list_evidence_files_by_creation
 
 
 def test_enforce_evidence_quota_deletes_oldest_files(tmp_path: Path):
+    """超过配额时，按创建时间从旧到新删除最旧文件。"""
     oldest = tmp_path / "old.jpg"
     newest = tmp_path / "new.mp4"
 
@@ -13,7 +14,7 @@ def test_enforce_evidence_quota_deletes_oldest_files(tmp_path: Path):
     time.sleep(0.05)
     newest.write_bytes(b"b" * 8)
 
-    # 设置不同的修改时间确保排序正确
+    # 用不同时间戳模拟不同的创建时间
     os.utime(oldest, (1000, 1000))
     os.utime(newest, (2000, 2000))
 
@@ -90,3 +91,41 @@ def test_get_directory_size(tmp_path: Path):
 
     size = get_directory_size(tmp_path)
     assert size == 300
+
+
+def test_list_evidence_files_by_creation_order(tmp_path: Path):
+    """验证文件按创建时间从旧到新排列。"""
+    f1 = tmp_path / "first.jpg"
+    f2 = tmp_path / "second.jpg"
+    f3 = tmp_path / "third.jpg"
+
+    f1.write_bytes(b"a")
+    f2.write_bytes(b"b")
+    f3.write_bytes(b"c")
+
+    os.utime(f1, (1000, 1000))
+    os.utime(f2, (2000, 2000))
+    os.utime(f3, (3000, 3000))
+
+    files = list_evidence_files_by_creation(tmp_path)
+    names = [f.name for f in files]
+    assert names == ["first.jpg", "second.jpg", "third.jpg"]
+
+
+def test_deletion_order_matches_creation_time(tmp_path: Path):
+    """确保删除顺序严格按创建时间从旧到新，而非按文件名或其他属性。"""
+    # 故意让文件名顺序和创建时间顺序相反
+    newer_by_name = tmp_path / "aaa.jpg"
+    older_by_name = tmp_path / "zzz.jpg"
+
+    newer_by_name.write_bytes(b"x" * 10)
+    older_by_name.write_bytes(b"y" * 10)
+
+    # zzz.jpg 创建时间更早，应该先被删除
+    os.utime(older_by_name, (1000, 1000))
+    os.utime(newer_by_name, (2000, 2000))
+
+    enforce_evidence_quota(tmp_path, max_bytes=15)
+
+    assert newer_by_name.exists(), "按创建时间较新的文件应保留"
+    assert not older_by_name.exists(), "按创建时间较旧的文件应被删除"
