@@ -19,6 +19,7 @@ from src.face_registry import FaceDirectoryScan
 from src.notifier import print_alert
 from src.phone_alert import PhoneAlertClient, PhoneAlertEvent, create_phone_alert_client
 from src.scheduler import is_in_schedule
+from src.status_panel import StatusData, StatusPanel
 from src.stream import StreamState, should_retry_connect
 from src.vision import PersonHitWindow
 
@@ -230,10 +231,21 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
     last_analysis_time = 0.0
     buffer_fps = 10.0
 
+    # 状态面板
+    rule_names = ", ".join(r.rule_name for r in camera.monitor_rules) or "无"
+    status = StatusData(
+        camera_name=camera.name,
+        rule_name=rule_names,
+        phone_status=phone_client.readiness_status(),
+    )
+    panel = StatusPanel(status)
+    panel.start()
+
     try:
         while True:
             # 连接 / 重连
             if cap is None or not cap.isOpened():
+                status.rtsp_status = "重连中"
                 now_mono = time.monotonic()
                 if not should_retry_connect(stream_state, now_mono):
                     time.sleep(1)
@@ -243,15 +255,18 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
                 cap = cv2.VideoCapture(camera.rtsp_url, cv2.CAP_FFMPEG)
                 if not cap.isOpened():
                     logger.error("RTSP 连接失败: %s", camera.rtsp_url)
+                    status.rtsp_status = "连接失败"
                     stream_state.last_error_at = time.monotonic()
                     cap = None
                     continue
 
                 logger.info("RTSP 连接成功: %s", camera.rtsp_url)
+                status.rtsp_status = "已连接"
 
             ret, frame = cap.read()
             if not ret:
                 logger.warning("读取帧失败，准备重连")
+                status.rtsp_status = "断流"
                 stream_state.last_error_at = time.monotonic()
                 cap.release()
                 cap = None
@@ -268,7 +283,11 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
 
             # 第一阶段：人形检测
             has_person = _try_detect_person(frame, person_detector)
+            status.frames_analyzed += 1
+            status.last_analysis_time = now_dt.strftime("%H:%M:%S")
+
             if not has_person:
+                status.last_identity = "无人"
                 for w in rule_windows.values():
                     w.record(None, now_mono)
                 continue
@@ -277,7 +296,10 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
             identified_name = _try_identify_person(frame, known_encodings)
 
             if identified_name is None:
+                status.last_identity = "有人·不确定"
                 logger.debug("检测到人形但未识别身份，记录为不确定")
+            else:
+                status.last_identity = f"识别: {identified_name}"
 
             # 第三阶段：对每条规则做投票和触发判断
             for rule in camera.monitor_rules:
@@ -323,6 +345,9 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
                     phone_result_text = f"拨打失败: {phone_result.error}"
                     logger.error("电话告警失败: %s", phone_result.error)
 
+                status.last_alert_time = now_dt.strftime("%H:%M:%S")
+                status.phone_status = phone_result_text
+
                 # 2. 证据保存（无论电话是否成功）
                 snapshot_path = _save_snapshot(frame, evidence_dir, camera.name, now_dt)
                 pre_frames = frame_buffer.get_frames()
@@ -355,9 +380,14 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
                 # 4. 证据配额清理
                 enforce_evidence_quota(evidence_dir, max_evidence_bytes)
 
+                # 更新证据占用
+                from src.evidence import get_directory_size
+                status.evidence_size_mb = get_directory_size(evidence_dir) / (1024 * 1024)
+
     except KeyboardInterrupt:
         logger.info("收到 Ctrl+C，正在退出...")
     finally:
+        panel.stop()
         if cap is not None and cap.isOpened():
             cap.release()
         logger.info("监控已停止: %s", camera.name)
