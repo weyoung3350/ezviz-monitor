@@ -58,25 +58,19 @@ class AliyunVmsClient(PhoneAlertClient):
     def call(self, event: PhoneAlertEvent) -> PhoneAlertResult:
         """发起真实电话告警。
 
-        当前为骨架实现，后续接入阿里云 SDK。
+        当前阿里云 VMS SDK 尚未接入，返回明确的失败结果。
+        接入后此方法应调用 SDK 并根据实际响应返回成功或失败。
         """
-        for number in self._called_numbers:
-            try:
-                logger.info(
-                    "正在拨打电话: %s (人物=%s 摄像头=%s 规则=%s)",
-                    number, event.person_name, event.camera_name, event.rule_name,
-                )
-                # TODO: 接入阿里云 VMS SDK
-                # from alibabacloud_dyvmsapi20170525.client import Client
-                # ...
-                logger.warning(
-                    "阿里云 VMS SDK 尚未接入，当前为骨架日志输出: 号码=%s 模板=%s",
-                    number, self._template_code,
-                )
-            except Exception as e:
-                return PhoneAlertResult(success=False, error=f"拨打 {number} 失败: {e}")
-
-        return PhoneAlertResult(success=True)
+        logger.warning(
+            "阿里云 VMS SDK 尚未接入，电话告警未实际拨出: "
+            "号码=%s 模板=%s 人物=%s 摄像头=%s",
+            self._called_numbers, self._template_code,
+            event.person_name, event.camera_name,
+        )
+        return PhoneAlertResult(
+            success=False,
+            error="阿里云 VMS SDK 尚未接入，电话告警未实际拨出",
+        )
 
 
 class MockPhoneAlertClient(PhoneAlertClient):
@@ -114,6 +108,11 @@ def create_phone_alert_client(phone_config) -> PhoneAlertClient:
             called_numbers=phone_config.called_numbers,
         )
     elif provider == "mock":
-        return MockPhoneAlertClient(should_succeed=True)
+        should_succeed = getattr(phone_config, "mock_should_succeed", True)
+        error_message = getattr(phone_config, "mock_error_message", "")
+        return MockPhoneAlertClient(
+            should_succeed=should_succeed,
+            error_message=error_message,
+        )
     else:
         raise ValueError(f"不支持的电话告警 provider: {provider!r}")

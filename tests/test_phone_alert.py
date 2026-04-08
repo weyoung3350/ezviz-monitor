@@ -56,11 +56,12 @@ def test_aliyun_client_init_requires_called_numbers():
         AliyunVmsClient(template_code="TTS_xxx", called_numbers=[])
 
 
-def test_aliyun_client_call_returns_result():
-    """骨架实现应返回成功（SDK 未接入时仅输出日志）。"""
+def test_aliyun_client_sdk_not_connected_returns_failure():
+    """SDK 未接入时必须返回失败，不允许假装成功。"""
     client = AliyunVmsClient(template_code="TTS_xxx", called_numbers=["13800000000"])
     result = client.call(_make_event())
-    assert result.success is True
+    assert result.success is False
+    assert "尚未接入" in result.error
 
 
 # --- create_phone_alert_client 工厂 ---
@@ -75,7 +76,7 @@ def test_create_aliyun_client():
     assert isinstance(client, AliyunVmsClient)
 
 
-def test_create_mock_client():
+def test_create_mock_client_default_success():
     class FakeConfig:
         provider = "mock"
         template_code = ""
@@ -83,6 +84,24 @@ def test_create_mock_client():
 
     client = create_phone_alert_client(FakeConfig())
     assert isinstance(client, MockPhoneAlertClient)
+    result = client.call(_make_event())
+    assert result.success is True
+
+
+def test_create_mock_client_configured_failure():
+    """mock 工厂支持从配置控制 should_succeed，用于集成测试失败路径。"""
+    class FakeConfig:
+        provider = "mock"
+        template_code = ""
+        called_numbers = []
+        mock_should_succeed = False
+        mock_error_message = "模拟电话服务故障"
+
+    client = create_phone_alert_client(FakeConfig())
+    assert isinstance(client, MockPhoneAlertClient)
+    result = client.call(_make_event())
+    assert result.success is False
+    assert "模拟电话服务故障" in result.error
 
 
 def test_create_unsupported_provider_raises():
