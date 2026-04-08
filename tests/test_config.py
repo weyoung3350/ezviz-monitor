@@ -160,6 +160,26 @@ def test_person_name_not_in_profiles_raises(tmp_path: Path):
         load_config(f)
 
 
+# --- 规则缺少 phone_call ---
+
+def test_rule_missing_phone_call_raises(tmp_path: Path):
+    text = VALID_CONFIG.replace(
+        """        actions:
+          - "phone_call"
+          - "terminal_log"
+          - "save_evidence"
+""",
+        """        actions:
+          - "terminal_log"
+          - "save_evidence"
+""",
+    )
+    f = tmp_path / "config.yaml"
+    f.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError, match="phone_call"):
+        load_config(f)
+
+
 # --- person_name 缺失 ---
 
 def test_missing_person_name_raises(tmp_path: Path):

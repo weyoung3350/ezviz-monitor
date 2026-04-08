@@ -273,42 +273,45 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
             for rule in camera.monitor_rules:
                 window = rule_windows[rule.rule_name]
                 cooldown = rule_cooldowns[rule.rule_name]
+                cooldown_key = f"{camera.name}:{rule.rule_name}"
 
-                target_hit = window.record(identified_name, now_mono)
+                # 先记录帧（不消费命中状态）
+                window.record(identified_name, now_mono)
 
-                if not target_hit:
+                if not window.is_hit():
                     continue
 
+                # 命中了，再判断时段和冷却
                 schedules = [{"start": s.start, "end": s.end} for s in rule.alert_schedules]
                 in_schedule = is_in_schedule(schedules, now_dt)
-                cooldown_allows = cooldown.should_trigger(camera.name, now_dt)
+                cooldown_allows = cooldown.should_trigger(cooldown_key, now_dt)
 
-                if not should_trigger_rule(in_schedule, target_hit, cooldown_allows):
+                if not should_trigger_rule(in_schedule, True, cooldown_allows):
                     if not in_schedule:
-                        logger.debug("规则 '%s' 命中但非告警时段", rule.rule_name)
+                        logger.debug("规则 '%s' 命中但非告警时段，命中状态保留", rule.rule_name)
                     elif not cooldown_allows:
                         logger.debug("规则 '%s' 命中但在冷却期内", rule.rule_name)
+                        window.consume()  # 冷却期内消费，避免冷却结束后立刻重触发
                     continue
 
-                # --- 触发告警 ---
-                cooldown.record(camera.name, now_dt)
+                # --- 触发告警：消费命中状态 ---
+                window.consume()
+                cooldown.record(cooldown_key, now_dt)
                 logger.info("规则触发: %s (人物=%s 摄像头=%s)", rule.rule_name, rule.person_name, camera.name)
 
-                # 1. 电话告警
-                phone_result_text = "未配置"
-                if "phone_call" in rule.actions:
-                    phone_event = PhoneAlertEvent(
-                        person_name=rule.person_name,
-                        camera_name=camera.name,
-                        rule_name=rule.rule_name,
-                        event_time=now_dt,
-                    )
-                    phone_result = phone_client.call(phone_event)
-                    if phone_result.success:
-                        phone_result_text = "拨打成功"
-                    else:
-                        phone_result_text = f"拨打失败: {phone_result.error}"
-                        logger.error("电话告警失败: %s", phone_result.error)
+                # 1. 电话告警（配置阶段已强制要求 phone_call 在 actions 中）
+                phone_event = PhoneAlertEvent(
+                    person_name=rule.person_name,
+                    camera_name=camera.name,
+                    rule_name=rule.rule_name,
+                    event_time=now_dt,
+                )
+                phone_result = phone_client.call(phone_event)
+                if phone_result.success:
+                    phone_result_text = "拨打成功"
+                else:
+                    phone_result_text = f"拨打失败: {phone_result.error}"
+                    logger.error("电话告警失败: %s", phone_result.error)
 
                 # 2. 证据保存（无论电话是否成功）
                 snapshot_path = _save_snapshot(frame, evidence_dir, camera.name, now_dt)

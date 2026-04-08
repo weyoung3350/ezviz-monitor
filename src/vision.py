@@ -6,7 +6,8 @@
 设计决策：
 - 只有 identified_name == target_name 的帧才计为命中
 - 其他家庭成员、未识别、不确定 —— 均不计为命中
-- 命中达到阈值后自动重置，避免同一波连续帧反复触发
+- 命中状态不会被自动消费；调用方需显式调用 consume() 才清空
+- 这样可以让"非告警时段的命中"不被白白丢掉
 """
 
 from collections import deque
@@ -15,10 +16,10 @@ from collections import deque
 class PersonHitWindow:
     """目标人物多帧投票窗口。
 
-    在 window_seconds 时间窗口内，如果有 >= frame_threshold 帧
-    识别为 target_name，则视为稳定命中，返回 True。
-
-    命中后内部状态自动重置，下一次命中需重新累积。
+    使用方式：
+        1. record(name, time)  — 记录一帧识别结果
+        2. is_hit()            — 查询是否达到阈值
+        3. consume()           — 确认触发后清空状态，避免重复触发
     """
 
     def __init__(
@@ -40,25 +41,16 @@ class PersonHitWindow:
         while self._hits and now - self._hits[0] > self._window:
             self._hits.popleft()
 
-    def record(self, identified_name: str | None, event_time: float) -> bool:
-        """记录一帧识别结果。
-
-        Args:
-            identified_name: 本帧识别出的人物名称。
-                - 等于 target_name → 计为一次命中
-                - 其他名称或 None → 不计为命中
-            event_time: 单调递增的时间戳（秒）
-
-        Returns:
-            True 表示在时间窗口内命中次数达到阈值（稳定识别到目标人物）。
-        """
+    def record(self, identified_name: str | None, event_time: float) -> None:
+        """记录一帧识别结果。不消费命中状态。"""
         self._purge_old(event_time)
-
         if identified_name == self._target:
             self._hits.append(event_time)
 
-        if len(self._hits) >= self._threshold:
-            self._hits.clear()
-            return True
+    def is_hit(self) -> bool:
+        """查询当前窗口内命中次数是否达到阈值。不改变内部状态。"""
+        return len(self._hits) >= self._threshold
 
-        return False
+    def consume(self) -> None:
+        """确认命中已被消费（触发告警后调用），清空累积状态。"""
+        self._hits.clear()

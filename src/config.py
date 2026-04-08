@@ -139,6 +139,11 @@ def _ensure_monitor_rules_valid(config: AppConfig) -> None:
                     f"规则 '{rule.rule_name}' 的 person_name '{rule.person_name}' "
                     f"在 profiles 中不存在"
                 )
+            if "phone_call" not in rule.actions:
+                raise ConfigError(
+                    f"规则 '{rule.rule_name}' 的 actions 必须包含 'phone_call'"
+                    f"（电话告警是一期核心能力）"
+                )
     if not all_rules:
         raise ConfigError("至少需要配置一条 monitor_rules")
     person_names_in_rules = {r.person_name for r in all_rules}
