@@ -1,0 +1,57 @@
+# 萤石摄像头智能监控告警系统 — 配置示例
+# 复制本文件为 config.yaml 后按实际情况修改
+
+cameras:
+  - name: "客厅"
+    rtsp_url: "rtsp://admin:HFUIJD@192.168.77.118:554/h264/ch1/main/av_stream"
+    alert_schedules:
+      - start: "22:00"
+        end: "07:00"
+    detect_outside_schedule: true
+
+  - name: "四楼阳台"
+    rtsp_url: "rtsp://admin:IJVZKK@192.168.77.43:554/h264/ch1/main/av_stream"
+    alert_schedules:
+      - start: "00:00"
+        end: "00:00"
+    detect_outside_schedule: true
+
+  - name: "三楼阳台"
+    rtsp_url: "rtsp://admin:GDOOUB@192.168.77.115:554/h264/ch1/main/av_stream"
+    alert_schedules:
+      - start: "22:00"
+        end: "07:00"
+    detect_outside_schedule: true
+
+  - name: "电梯厅"
+    rtsp_url: "rtsp://admin:ACNPUB@192.168.77.117:554/h264/ch1/main/av_stream"
+    alert_schedules:
+      - start: "00:00"
+        end: "00:00"
+    detect_outside_schedule: true
+
+  - name: "露台"
+    rtsp_url: "rtsp://admin:GSJAOM@192.168.77.157:554/h264/ch1/main/av_stream"
+    alert_schedules:
+      - start: "22:00"
+        end: "07:00"
+    detect_outside_schedule: true
+
+alert:
+  cooldown_minutes: 5
+  stranger_frames_threshold: 3
+  stranger_window_seconds: 2
+
+faces_dir: "./known_faces"
+evidence_dir: "./evidence"
+
+video:
+  pre_seconds: 5
+  post_seconds: 5
+  output_format: "mp4"
+
+storage:
+  max_evidence_size_gb: 20
+
+stream:
+  reconnect_interval_seconds: 10
