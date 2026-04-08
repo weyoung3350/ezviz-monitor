@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 
-from src.face_registry import scan_face_directories, FaceRegistryError
+from src.face_registry import scan_face_directories, ensure_target_person_exists, FaceRegistryError
 
 
 def test_scan_face_directories_single_person(tmp_path: Path):
@@ -60,3 +60,24 @@ def test_ignores_files_in_root(tmp_path: Path):
 
     result = scan_face_directories(tmp_path)
     assert result.people == ["爸爸"]
+
+
+# --- 目标人物校验 ---
+
+def test_ensure_target_person_exists_passes(tmp_path: Path):
+    d = tmp_path / "杨孝治"
+    d.mkdir()
+    (d / "01.jpg").write_bytes(b"fake")
+    scan = scan_face_directories(tmp_path)
+
+    ensure_target_person_exists(scan, "杨孝治")  # 不应抛异常
+
+
+def test_ensure_target_person_missing_raises(tmp_path: Path):
+    d = tmp_path / "老婆"
+    d.mkdir()
+    (d / "01.jpg").write_bytes(b"fake")
+    scan = scan_face_directories(tmp_path)
+
+    with pytest.raises(FaceRegistryError, match="杨孝治"):
+        ensure_target_person_exists(scan, "杨孝治")

@@ -14,7 +14,7 @@ from src.face_registry import FaceDirectoryScan
 from src.notifier import print_alert
 from src.scheduler import is_in_schedule
 from src.stream import StreamState, should_retry_connect
-from src.vision import StrangerDecisionWindow
+from src.vision import PersonHitWindow
 
 logger = logging.getLogger(__name__)
 
@@ -174,9 +174,11 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
 
     # 初始化组件
     cooldown = AlertCooldown(minutes=config.alert.cooldown_minutes)
-    decision_window = StrangerDecisionWindow(
-        frame_threshold=config.alert.stranger_frames_threshold,
-        window_seconds=config.alert.stranger_window_seconds,
+    # TODO(T16): 完整重构主流程时接入规则驱动的人物识别
+    decision_window = PersonHitWindow(
+        target_name="杨孝治",
+        frame_threshold=config.alert.person_frames_threshold,
+        window_seconds=config.alert.person_window_seconds,
     )
     frame_buffer = FrameBuffer(max_seconds=config.video.pre_seconds)
     person_detector = cv2.HOGDescriptor()
@@ -238,22 +240,25 @@ def run_monitor(config: AppConfig, camera: CameraConfig, face_scan: FaceDirector
             # 第一阶段：人形检测
             has_person = _try_detect_person(frame, person_detector)
             if not has_person:
-                decision_window.record(False, now_mono)
+                decision_window.record(None, now_mono)
                 continue
 
             # 第二阶段：人脸识别
+            # TODO(T16): 完整重构为目标人物识别链路
             face_result = _try_recognize_family(frame, known_encodings)
 
+            # face_result: True=家人, False=陌生人脸, None=未检测到人脸
+            # 临时适配：识别到的人名传入 decision_window
+            # T16 会把 _try_recognize_family 改为返回人名
+            identified_name: str | None = None
             if face_result is True:
-                # 家人，不告警
-                decision_window.record(False, now_mono)
-                logger.debug("检测到家人，不告警")
-                continue
+                identified_name = "_家人"  # 非目标人物
+            elif face_result is False:
+                identified_name = None  # 陌生人脸，不确定身份
 
-            # 无人脸或陌生人脸 → 按陌生人处理
-            is_stranger_event = decision_window.record(True, now_mono)
+            is_target_hit = decision_window.record(identified_name, now_mono)
 
-            if not is_stranger_event:
+            if not is_target_hit:
                 continue
 
             # 检查时段和冷却

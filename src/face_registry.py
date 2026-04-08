@@ -41,3 +41,11 @@ def scan_face_directories(root: Path) -> FaceDirectoryScan:
         raise FaceRegistryError("没有任何人物目录包含有效照片")
 
     return FaceDirectoryScan(people=people, warnings=warnings)
+
+
+def ensure_target_person_exists(scan: FaceDirectoryScan, target_name: str) -> None:
+    """校验目标人物的样本目录存在且包含有效照片。"""
+    if target_name not in scan.people:
+        raise FaceRegistryError(
+            f"目标人物 '{target_name}' 的样本目录缺失或没有有效照片"
+        )
