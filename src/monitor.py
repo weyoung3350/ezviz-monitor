@@ -153,6 +153,16 @@ def ensure_face_recognition_available() -> None:
 
 # --- 人脸编码加载 ---
 
+def _load_image_with_exif(path: Path) -> np.ndarray:
+    """加载图片并处理 EXIF 旋转，确保像素方向与视觉方向一致。"""
+    from PIL import Image, ImageOps
+    pil_img = Image.open(path)
+    pil_img = ImageOps.exif_transpose(pil_img)
+    if pil_img.mode != "RGB":
+        pil_img = pil_img.convert("RGB")
+    return np.array(pil_img)
+
+
 def _load_face_encodings(scan: FaceDirectoryScan, faces_dir: Path) -> list[tuple[str, np.ndarray]]:
     import face_recognition
 
@@ -162,7 +172,7 @@ def _load_face_encodings(scan: FaceDirectoryScan, faces_dir: Path) -> list[tuple
         for img_path in person_dir.iterdir():
             if img_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
                 try:
-                    image = face_recognition.load_image_file(str(img_path))
+                    image = _load_image_with_exif(img_path)
                     encs = face_recognition.face_encodings(image)
                     if encs:
                         encodings.append((person_name, encs[0]))
