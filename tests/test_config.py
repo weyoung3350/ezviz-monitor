@@ -140,6 +140,26 @@ def test_no_monitor_rules_raises(tmp_path: Path):
         load_config(f)
 
 
+# --- 杨孝治规则缺失 ---
+
+def test_no_yangxiaozhi_rule_raises(tmp_path: Path):
+    text = VALID_CONFIG.replace('person_name: "杨孝治"', 'person_name: "其他人"')
+    f = tmp_path / "config.yaml"
+    f.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError, match="杨孝治"):
+        load_config(f)
+
+
+# --- person_name 不在 profiles 中 ---
+
+def test_person_name_not_in_profiles_raises(tmp_path: Path):
+    text = VALID_CONFIG.replace('person_name: "杨孝治"', 'person_name: "不存在的人"')
+    f = tmp_path / "config.yaml"
+    f.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError, match="profiles 中不存在"):
+        load_config(f)
+
+
 # --- person_name 缺失 ---
 
 def test_missing_person_name_raises(tmp_path: Path):
@@ -198,19 +218,19 @@ def test_phone_alert_enabled_missing_numbers_raises(tmp_path: Path):
         load_config(f)
 
 
-# --- phone_alert 未启用时不校验详细字段 ---
+# --- phone_alert enabled=false 时启动失败（电话告警是核心能力）---
 
-def test_phone_alert_disabled_skips_validation(tmp_path: Path):
+def test_phone_alert_disabled_raises(tmp_path: Path):
     text = VALID_CONFIG.replace("enabled: true", "enabled: false")
     f = tmp_path / "config.yaml"
     f.write_text(text, encoding="utf-8")
-    config = load_config(f)
-    assert config.phone_alert.enabled is False
+    with pytest.raises(ConfigError, match="enabled 必须为 true"):
+        load_config(f)
 
 
-# --- phone_alert 完全缺失时不报错（可选节点）---
+# --- phone_alert 完全缺失时启动失败 ---
 
-def test_phone_alert_absent_is_ok(tmp_path: Path):
+def test_phone_alert_absent_raises(tmp_path: Path):
     text = VALID_CONFIG.replace(
         """phone_alert:
   provider: "aliyun_vms"
@@ -223,8 +243,8 @@ def test_phone_alert_absent_is_ok(tmp_path: Path):
     )
     f = tmp_path / "config.yaml"
     f.write_text(text, encoding="utf-8")
-    config = load_config(f)
-    assert config.phone_alert is None
+    with pytest.raises(ConfigError):
+        load_config(f)
 
 
 # --- 时间格式校验（复用 AlertSchedule 验证器）---

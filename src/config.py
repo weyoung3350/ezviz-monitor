@@ -103,7 +103,7 @@ class AppConfig(BaseModel):
     storage: StorageConfig
     stream: StreamConfig
     profiles: list[ProfileConfig] = []
-    phone_alert: PhoneAlertConfig | None = None
+    phone_alert: PhoneAlertConfig
 
 
 def _ensure_unique_camera_names(config: AppConfig) -> None:
@@ -114,8 +114,8 @@ def _ensure_unique_camera_names(config: AppConfig) -> None:
 
 def _ensure_phone_alert_complete(config: AppConfig) -> None:
     pa = config.phone_alert
-    if pa is None or not pa.enabled:
-        return
+    if not pa.enabled:
+        raise ConfigError("phone_alert.enabled 必须为 true（电话告警是一期核心能力）")
     if not pa.provider:
         raise ConfigError("phone_alert.enabled=true 但 provider 为空")
     if not pa.template_code:
@@ -125,6 +125,7 @@ def _ensure_phone_alert_complete(config: AppConfig) -> None:
 
 
 def _ensure_monitor_rules_valid(config: AppConfig) -> None:
+    profile_names = {p.name for p in config.profiles}
     all_rules = []
     for cam in config.cameras:
         for rule in cam.monitor_rules:
@@ -133,8 +134,16 @@ def _ensure_monitor_rules_valid(config: AppConfig) -> None:
                 raise ConfigError(
                     f"摄像头 '{cam.name}' 的规则 '{rule.rule_name}' 缺少 alert_schedules"
                 )
+            if rule.person_name not in profile_names:
+                raise ConfigError(
+                    f"规则 '{rule.rule_name}' 的 person_name '{rule.person_name}' "
+                    f"在 profiles 中不存在"
+                )
     if not all_rules:
         raise ConfigError("至少需要配置一条 monitor_rules")
+    person_names_in_rules = {r.person_name for r in all_rules}
+    if "杨孝治" not in person_names_in_rules:
+        raise ConfigError("monitor_rules 中必须包含至少一条针对 '杨孝治' 的规则")
 
 
 def load_config(path: Path) -> AppConfig:
