@@ -1,46 +1,36 @@
-# 萤石摄像头智能监控告警系统 — 配置示例
+# 萤石摄像头老人夜间外出监护告警系统 — 配置示例
 # 复制本文件为 config.yaml 后按实际情况修改
 
 cameras:
+  - name: "电梯厅"
+    rtsp_url: "rtsp://admin:ACNPUB@192.168.77.117:554/h265/ch1/main/av_stream"
+    monitor_rules:
+      - rule_name: "杨孝治夜间外出监护"
+        person_name: "杨孝治"
+        alert_schedules:
+          - start: "22:00"
+            end: "07:00"
+        actions:
+          - "phone_call"
+          - "terminal_log"
+          - "save_evidence"
+
   - name: "客厅"
-    rtsp_url: "rtsp://admin:HFUIJD@192.168.77.118:554/h264/ch1/main/av_stream"
-    alert_schedules:
-      - start: "22:00"
-        end: "07:00"
-    detect_outside_schedule: true
+    rtsp_url: "rtsp://admin:HFUIJD@192.168.77.118:554/h265/ch1/main/av_stream"
 
   - name: "四楼阳台"
-    rtsp_url: "rtsp://admin:IJVZKK@192.168.77.43:554/h264/ch1/main/av_stream"
-    alert_schedules:
-      - start: "00:00"
-        end: "00:00"
-    detect_outside_schedule: true
+    rtsp_url: "rtsp://admin:IJVZKK@192.168.77.43:554/h265/ch1/main/av_stream"
 
   - name: "三楼阳台"
-    rtsp_url: "rtsp://admin:GDOOUB@192.168.77.115:554/h264/ch1/main/av_stream"
-    alert_schedules:
-      - start: "22:00"
-        end: "07:00"
-    detect_outside_schedule: true
-
-  - name: "电梯厅"
-    rtsp_url: "rtsp://admin:ACNPUB@192.168.77.117:554/h264/ch1/main/av_stream"
-    alert_schedules:
-      - start: "00:00"
-        end: "00:00"
-    detect_outside_schedule: true
+    rtsp_url: "rtsp://admin:GDOOUB@192.168.77.115:554/h265/ch1/main/av_stream"
 
   - name: "露台"
-    rtsp_url: "rtsp://admin:GSJAOM@192.168.77.157:554/h264/ch1/main/av_stream"
-    alert_schedules:
-      - start: "22:00"
-        end: "07:00"
-    detect_outside_schedule: true
+    rtsp_url: "rtsp://admin:GSJAOM@192.168.77.157:554/h265/ch1/main/av_stream"
 
 alert:
   cooldown_minutes: 5
-  stranger_frames_threshold: 3
-  stranger_window_seconds: 2
+  person_frames_threshold: 2
+  person_window_seconds: 2
 
 faces_dir: "./known_faces"
 evidence_dir: "./evidence"
@@ -55,3 +45,18 @@ storage:
 
 stream:
   reconnect_interval_seconds: 10
+
+profiles:
+  - name: "杨孝治"
+    role: "重点监护对象"
+    gender: "male"
+    age: 77
+    mobility: "slow"
+    notes: "阿尔兹海默，夜间独自外出风险高"
+
+phone_alert:
+  provider: "aliyun_vms"
+  enabled: true
+  template_code: "TTS_xxx"
+  called_numbers:
+    - "13800000000"

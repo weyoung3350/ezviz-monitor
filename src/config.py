@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -15,7 +16,6 @@ class AlertSchedule(BaseModel):
     @field_validator("start", "end")
     @classmethod
     def validate_time_format(cls, v: str) -> str:
-        import re
         if not re.fullmatch(r"\d{2}:\d{2}", v):
             raise ValueError(f"时间格式必须为 HH:MM，实际值: {v!r}")
         parts = v.split(":")
@@ -25,17 +25,30 @@ class AlertSchedule(BaseModel):
         return v
 
 
+class MonitorRule(BaseModel):
+    rule_name: str
+    person_name: str
+    alert_schedules: list[AlertSchedule]
+    actions: list[str]
+
+    @field_validator("actions")
+    @classmethod
+    def actions_not_empty(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("monitor_rules.actions 不能为空")
+        return v
+
+
 class CameraConfig(BaseModel):
     name: str
     rtsp_url: str
-    alert_schedules: list[AlertSchedule]
-    detect_outside_schedule: bool = True
+    monitor_rules: list[MonitorRule] = []
 
 
 class AlertConfig(BaseModel):
     cooldown_minutes: int
-    stranger_frames_threshold: int
-    stranger_window_seconds: int
+    person_frames_threshold: int
+    person_window_seconds: int
 
 
 class VideoConfig(BaseModel):
@@ -59,6 +72,28 @@ class StreamConfig(BaseModel):
     reconnect_interval_seconds: int
 
 
+class ProfileConfig(BaseModel):
+    name: str
+    role: str = ""
+    gender: str = ""
+    age: int = 0
+    mobility: str = ""
+    notes: str = ""
+
+
+class PhoneAlertConfig(BaseModel):
+    provider: str
+    enabled: bool = False
+    template_code: str = ""
+    called_numbers: list[str] = []
+
+    @field_validator("called_numbers")
+    @classmethod
+    def numbers_when_enabled(cls, v: list[str], info) -> list[str]:
+        # 在模型校验阶段只做格式检查，启用状态的业务校验在 load_config 中做
+        return v
+
+
 class AppConfig(BaseModel):
     cameras: list[CameraConfig]
     alert: AlertConfig
@@ -67,12 +102,39 @@ class AppConfig(BaseModel):
     video: VideoConfig
     storage: StorageConfig
     stream: StreamConfig
+    profiles: list[ProfileConfig] = []
+    phone_alert: PhoneAlertConfig | None = None
 
 
 def _ensure_unique_camera_names(config: AppConfig) -> None:
     names = [c.name for c in config.cameras]
     if len(names) != len(set(names)):
         raise ConfigError("摄像头名称重复")
+
+
+def _ensure_phone_alert_complete(config: AppConfig) -> None:
+    pa = config.phone_alert
+    if pa is None or not pa.enabled:
+        return
+    if not pa.provider:
+        raise ConfigError("phone_alert.enabled=true 但 provider 为空")
+    if not pa.template_code:
+        raise ConfigError("phone_alert.enabled=true 但 template_code 为空")
+    if not pa.called_numbers:
+        raise ConfigError("phone_alert.enabled=true 但 called_numbers 为空")
+
+
+def _ensure_monitor_rules_valid(config: AppConfig) -> None:
+    all_rules = []
+    for cam in config.cameras:
+        for rule in cam.monitor_rules:
+            all_rules.append(rule)
+            if not rule.alert_schedules:
+                raise ConfigError(
+                    f"摄像头 '{cam.name}' 的规则 '{rule.rule_name}' 缺少 alert_schedules"
+                )
+    if not all_rules:
+        raise ConfigError("至少需要配置一条 monitor_rules")
 
 
 def load_config(path: Path) -> AppConfig:
@@ -82,4 +144,6 @@ def load_config(path: Path) -> AppConfig:
     except Exception as e:
         raise ConfigError(f"配置校验失败: {e}") from e
     _ensure_unique_camera_names(config)
+    _ensure_monitor_rules_valid(config)
+    _ensure_phone_alert_complete(config)
     return config
