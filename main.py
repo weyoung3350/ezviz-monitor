@@ -84,11 +84,18 @@ def main() -> int:
 
     # 启动检查模式 or 持续监控
     if args.check:
-        ok = run_check(config, camera, face_scan)
+        try:
+            ok = run_check(config, camera, face_scan)
+        except ImportError as e:
+            logger.error("缺少必需依赖: %s", e)
+            return 1
         return 0 if ok else 1
 
     try:
         run_monitor(config, camera, face_scan)
+    except ImportError as e:
+        logger.error("缺少必需依赖: %s", e)
+        return 1
     except KeyboardInterrupt:
         logger.info("程序退出")
 

@@ -24,7 +24,7 @@
 
 ## 当前文档
 
-- 需求文档：`需求文档.md`
+- 需求文档：`docs/需求文档.md`
 - 实现计划：`docs/plans/2026-04-08-萤石摄像头告警系统实现计划.md`
 - Claude Code 执行说明：`docs/claude-code-执行说明.md`
 - Claude Code 自测清单：`docs/自测清单.md`
@@ -32,6 +32,8 @@
 - Claude Code 启动提示词：`docs/Claude-Code-启动提示词.md`
 - Claude Code 交付包说明：`docs/Claude-Code-交付包说明.md`
 - Claude Code 首条消息：`docs/Claude-Code-首条消息.md`
+- Claude Code 返工提示词：`docs/Claude-Code-返工提示词.md`
+- Claude Code 二次返工提示词：`docs/Claude-Code-二次返工提示词.md`
 - 验收测试方案：`docs/验收测试方案.md`
 
 ## 当前建议架构

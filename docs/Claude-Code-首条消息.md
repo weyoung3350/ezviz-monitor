@@ -10,7 +10,7 @@
 请先按下面顺序读取这些文件：
 
 1. docs/Claude-Code-启动提示词.md
-2. 需求文档.md
+2. docs/需求文档.md
 3. docs/plans/2026-04-08-萤石摄像头告警系统实现计划.md
 4. docs/claude-code-执行说明.md
 5. docs/自测清单.md

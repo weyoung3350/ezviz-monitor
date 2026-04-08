@@ -15,7 +15,7 @@
 
 Claude Code 开始前，必须先完整阅读以下文档：
 
-1. `需求文档.md`
+1. `docs/需求文档.md`
 2. `docs/plans/2026-04-08-萤石摄像头告警系统实现计划.md`
 3. `PROJECT_MEMORY.md`
 4. `docs/自测清单.md`
@@ -23,7 +23,7 @@ Claude Code 开始前，必须先完整阅读以下文档：
 
 如果以上文档之间存在冲突，优先级按以下顺序处理：
 
-1. `需求文档.md`
+1. `docs/需求文档.md`
 2. `docs/plans/2026-04-08-萤石摄像头告警系统实现计划.md`
 3. `PROJECT_MEMORY.md`
 4. `docs/自测清单.md`

@@ -17,7 +17,7 @@
 把以下文件按顺序交给 Claude Code：
 
 1. `docs/Claude-Code-启动提示词.md`
-2. `需求文档.md`
+2. `docs/需求文档.md`
 3. `docs/plans/2026-04-08-萤石摄像头告警系统实现计划.md`
 4. `docs/claude-code-执行说明.md`
 5. `docs/自测清单.md`
@@ -38,7 +38,7 @@
 - 明确禁止事项
 - 明确最终交付格式
 
-### `需求文档.md`
+### `docs/需求文档.md`
 
 作用：
 
