@@ -11,19 +11,18 @@
 pip install -r requirements.txt
 ```
 
+`face_recognition` 是必需依赖（用于区分家人与陌生人）。如果安装失败，先安装编译工具：
+
+```bash
+brew install cmake
+pip install dlib face_recognition
+```
+
 ### FFmpeg（可选，建议安装以获得更好的 RTSP 兼容性）
 
 ```bash
 brew install ffmpeg
 ```
-
-### face_recognition（可选，用于人脸识别）
-
-```bash
-pip install face_recognition
-```
-
-如果不安装 `face_recognition`，系统仍可运行，但所有检测到的人形都会被视为陌生人。
 
 ## 快速开始
 
