@@ -9,6 +9,7 @@ import pytest
 
 from src.monitor import (
     FrameBuffer,
+    _load_image_with_exif,
     _save_clip,
     _save_snapshot,
     ensure_face_recognition_available,
@@ -222,3 +223,38 @@ def test_phone_failure_still_allows_evidence():
     with tempfile.TemporaryDirectory() as tmp:
         path = _save_snapshot(frame, Path(tmp), "电梯厅", event.event_time)
         assert path.exists()
+
+
+# --- EXIF 旋转处理 ---
+
+def test_load_image_with_exif_applies_transpose(tmp_path: Path):
+    """验证 _load_image_with_exif 调用了 exif_transpose，修正图片方向。"""
+    from PIL import Image
+
+    # 创建一张 200x100 的横向图片，设置 EXIF Orientation=6（顺时针旋转 90°）
+    img = Image.new("RGB", (200, 100), color=(255, 0, 0))
+    from PIL.ExifTags import Base as ExifBase
+    import piexif
+    exif_dict = {"0th": {piexif.ImageIFD.Orientation: 6}}
+    exif_bytes = piexif.dump(exif_dict)
+    path = tmp_path / "rotated.jpg"
+    img.save(str(path), exif=exif_bytes)
+
+    # 原始像素：200x100。EXIF Orientation=6 表示顺时针 90°，
+    # exif_transpose 后应变为 100x200
+    result = _load_image_with_exif(path)
+    h, w = result.shape[:2]
+    assert w == 100 and h == 200, f"期望 100x200，实际 {w}x{h}"
+
+
+def test_load_image_with_exif_no_exif_passthrough(tmp_path: Path):
+    """没有 EXIF 信息的图片应原样返回。"""
+    from PIL import Image
+
+    img = Image.new("RGB", (300, 150), color=(0, 255, 0))
+    path = tmp_path / "normal.jpg"
+    img.save(str(path))
+
+    result = _load_image_with_exif(path)
+    h, w = result.shape[:2]
+    assert w == 300 and h == 150
