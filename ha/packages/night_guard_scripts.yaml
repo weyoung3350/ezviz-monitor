@@ -1,0 +1,198 @@
+# =============================================================================
+# 夜间门内开锁告警脚本
+# =============================================================================
+#
+# 用途：门内开锁事件触发后，立即发送文字告警，然后连续抓拍并发送图片通知。
+#
+# 前置配置：
+#   1. configuration.yaml 中需添加以下白名单，允许写入快照文件：
+#      homeassistant:
+#        allowlist_external_dirs:
+#          - /config/www
+#
+#   2. Telegram Bot 集成已配置且 chat_id 可用
+#
+#   3. 摄像头 camera.dian_ti_ting_mainstream 已通过 ONVIF 集成接入
+# =============================================================================
+
+script:
+  send_night_unlock_alert:
+    alias: "夜间门内开锁告警"
+    description: >
+      门内开锁触发后：1) 立即发文字告警  2) 等待门状态确认
+      3) 连续抓拍 5 次  4) 发送图片或失败兜底通知
+    icon: mdi:alert
+    mode: single  # 同一时间只运行一个实例，避免重复告警
+
+    # ------------------------------------------------------------------
+    # 变量定义
+    # ------------------------------------------------------------------
+    variables:
+      # 告警触发时间戳（用于文件名和通知文案）
+      alert_timestamp: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
+      alert_time_display: "{{ now().strftime('%H:%M:%S') }}"
+      # 抓拍参数
+      snapshot_count: 5
+      snapshot_interval_seconds: 5
+      # 摄像头实体
+      camera_entity: "camera.dian_ti_ting_mainstream"
+      # 门状态实体
+      door_state_entity: "sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021"
+
+    sequence:
+      # ================================================================
+      # 第 1 步：立即发送首条文字告警（不等抓拍，确保最快通知）
+      # ================================================================
+      - alias: "立即发送首条文字告警"
+        service: telegram_bot.send_message
+        data:
+          entity_id: notify.homeassistant_yang_weiyi_6763263062
+          message: >-
+            ⚠️ 夜间门内开锁告警
+
+            时间：{{ alert_time_display }}
+
+            门锁状态：门内按钮开锁
+
+            正在抓拍电梯厅画面...
+          disable_notification: false  # 强制响铃
+        continue_on_error: true  # Telegram 不可用时不中断后续抓拍流程
+
+      # ================================================================
+      # 第 2 步：立即开始抓拍（不等门状态，避免阻塞 10 秒）
+      # 门状态确认改为抓拍结束后读取当前值（抓拍 20 秒足够门状态变化）
+      # ================================================================
+      # 初始化状态
+      - alias: "初始化抓拍和门状态观察"
+        variables:
+          last_successful_snapshot: ""
+          door_ever_opened: false
+          door_opened_state: ""
+          photo_attempted: false
+
+      - alias: "连续抓拍循环"
+        repeat:
+          count: "{{ snapshot_count }}"
+          sequence:
+            # 生成当前轮次的文件名
+            - variables:
+                current_snapshot_path: "/config/www/night_alert_{{ alert_timestamp }}_{{ repeat.index }}.jpg"
+
+            # 尝试抓拍
+            # continue_on_error: true 确保即使摄像头离线也不中断循环
+            - alias: "抓拍第 {{ repeat.index }} 次"
+              service: camera.snapshot
+              target:
+                entity_id: "{{ camera_entity }}"
+              data:
+                filename: "{{ current_snapshot_path }}"
+              continue_on_error: true
+
+            # 记录本次抓拍路径
+            # HA 无法精确判断 camera.snapshot 是否真正落盘，
+            # 仅在摄像头实体可用时更新路径（离线时确定失败，不更新）。
+            # 文案中用"尝试"而非"成功"描述，避免误导。
+            - alias: "摄像头可用时记录抓拍路径"
+              if:
+                - condition: template
+                  value_template: "{{ states(camera_entity) not in ['unavailable', 'unknown'] }}"
+              then:
+                - variables:
+                    last_successful_snapshot: "{{ current_snapshot_path }}"
+
+            - service: system_log.write
+              data:
+                message: >-
+                  [夜间告警] 抓拍第 {{ repeat.index }} 次完成：{{ current_snapshot_path }}
+                level: info
+
+            # 每轮检查门状态（捕获瞬态的"已开锁"，避免只读终态）
+            - alias: "检查门状态变化"
+              if:
+                - condition: template
+                  value_template: >-
+                    {% set ds = states(door_state_entity) %}
+                    {{ not door_ever_opened and ('已开锁' in ds or '虚掩' in ds or '门未关' in ds) }}
+              then:
+                - variables:
+                    door_ever_opened: true
+                    door_opened_state: "{{ states(door_state_entity) }}"
+
+            # 等待间隔（最后一次不等待）
+            - alias: "抓拍间隔等待"
+              if:
+                - condition: template
+                  value_template: "{{ repeat.index < snapshot_count }}"
+              then:
+                - delay:
+                    seconds: "{{ snapshot_interval_seconds }}"
+
+      # ================================================================
+      # 第 3 步：汇总门状态观察结果（基于抓拍期间的持续检查）
+      # ================================================================
+      - alias: "汇总门状态确认结果"
+        variables:
+          door_confirmed_text: >-
+            {% if door_ever_opened %}已确认开门（{{ door_opened_state }}）{% else %}未确认开门（当前：{{ states(door_state_entity) }}）{% endif %}
+
+      # ================================================================
+      # 第 4 步：发送图片通知
+      # ================================================================
+      # 只有记录到候选快照路径时才尝试发图。
+      # 这仍不代表文件一定真实落盘，因此后续详情通知必须继续说明结果不确定性。
+      - alias: "尝试发送图片通知"
+        if:
+          - condition: template
+            value_template: "{{ last_successful_snapshot != '' }}"
+        then:
+          - service: telegram_bot.send_photo
+            data:
+              entity_id: notify.homeassistant_yang_weiyi_6763263062
+              file: "{{ last_successful_snapshot }}"
+              caption: >-
+                📷 电梯厅快照
+
+                时间：{{ alert_time_display }}
+
+                门状态：{{ door_confirmed_text }}
+
+                抓拍：{{ snapshot_count }} 次尝试
+            continue_on_error: true
+            response_variable: send_photo_result
+          - variables:
+              photo_attempted: true
+
+      # 兜底策略：
+      # HA script 中 continue_on_error 后无法精确判断 camera.snapshot 或
+      # send_photo 是否真正成功（文件可能因 allowlist、磁盘空间等原因未落盘）。
+      # 因此始终发送一条详情文字通知（静默），确保用户至少能收到完整信息。
+      # 如果图片发送成功，用户会看到图片+详情两条；如果失败，至少有详情兜底。
+      - alias: "发送详情文字通知（兜底 + 门状态确认）"
+        service: telegram_bot.send_message
+        data:
+          entity_id: notify.homeassistant_yang_weiyi_6763263062
+          message: >-
+            📋 告警详情
+
+            时间：{{ alert_time_display }}
+            门状态：{{ door_confirmed_text }}
+            抓拍尝试：{{ snapshot_count }} 次
+            {% if last_successful_snapshot == '' %}
+            ❌ 全部抓拍失败，请打开摄像头查看
+            {% elif photo_attempted %}
+            ℹ️ 已尝试发送图片：{{ last_successful_snapshot }}
+            若未收到上一条图片消息，则说明本次快照写入或图片发送失败，请按本条文字告警处理
+            {% endif %}
+          disable_notification: true  # 静默，不重复响铃
+
+      # ================================================================
+      # 结束：写日志记录本次告警执行完成
+      # ================================================================
+      - alias: "记录告警执行完成日志"
+        service: system_log.write
+        data:
+          message: >-
+            [夜间告警] 执行完成。门状态：{{ door_confirmed_text }}，
+            抓拍 {{ snapshot_count }} 次，
+            最后记录文件：{{ last_successful_snapshot if last_successful_snapshot else '无（摄像头可能离线）' }}
+          level: info

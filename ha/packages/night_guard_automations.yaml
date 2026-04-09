@@ -1,0 +1,260 @@
+# =============================================================================
+# 夜间监护自动化 — HA 一期
+# =============================================================================
+#
+# 包含：
+#   - 2 条自动化 (H02 夜间门内开锁告警, H04 夜间童锁守护)
+#   - 2 个辅助实体 (冷却时间戳)
+#
+# 使用方式：
+#   在 configuration.yaml 中添加：
+#     homeassistant:
+#       allowlist_external_dirs:
+#         - /config/www
+#       packages:
+#         night_guard_auto: !include packages/night_guard_automations.yaml
+#         night_guard_scripts: !include packages/night_guard_scripts.yaml
+#
+#   Telegram 通知实体: notify.homeassistant_yang_weiyi_6763263062
+#
+# 依赖：
+#   - night_guard_scripts.yaml（告警脚本，必须同时加载）
+#   - Telegram 集成（telegram_bot 服务）
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 辅助实体：冷却时间戳
+# -----------------------------------------------------------------------------
+input_datetime:
+  # H02 门内开锁告警冷却时间戳
+  last_night_unlock_alert_at:
+    name: "最近一次夜间开锁告警时间"
+    has_date: true
+    has_time: true
+
+  # H04 童锁守护提醒冷却时间戳
+  last_child_lock_reminder_at:
+    name: "最近一次童锁提醒时间"
+    has_date: true
+    has_time: true
+
+  # H04-b 门状态不可读提醒冷却时间戳（独立于 H04）
+  last_door_state_unavailable_at:
+    name: "最近一次门状态不可读提醒时间"
+    has_date: true
+    has_time: true
+
+# -----------------------------------------------------------------------------
+# 自动化
+# -----------------------------------------------------------------------------
+automation:
+  # ===========================================================================
+  # H02: 夜间门内开锁告警
+  # ===========================================================================
+  # 触发：门锁事件实体 state_changed
+  # 条件：夜间时段 23:00~07:30（跨天） + 门内按钮开锁 + 冷却 5 分钟
+  # 动作：调用告警脚本 + 更新冷却时间戳
+  # ===========================================================================
+  - id: night_door_unlock_alert
+    alias: "H02 夜间门内开锁告警"
+    description: >-
+      监听门锁事件，当夜间时段检测到门内按钮开锁（操作方式=9, 锁动作=2）时，
+      调用告警脚本发送 Telegram 通知。5 分钟冷却防止重复告警。
+    mode: single
+
+    trigger:
+      - platform: state
+        entity_id: event.xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
+        id: lock_event_trigger
+
+    condition:
+      # --- 条件 1: 夜间时段 23:00~07:30（跨天判断） ---
+      - condition: template
+        value_template: >-
+          {% set hour = now().hour %}
+          {% set minute = now().minute %}
+          {% set t = hour * 60 + minute %}
+          {{ t >= 23 * 60 or t < 7 * 60 + 30 }}
+
+      # --- 条件 2: 门内按钮开锁（操作方式=9 且 锁动作=2 且 操作位置=1） ---
+      - condition: template
+        value_template: >-
+          {% set op_method = state_attr('event.xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020', '操作方式') %}
+          {% set lock_action = state_attr('event.xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020', '锁动作') %}
+          {% set op_position = state_attr('event.xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020', '操作位置') %}
+          {{ op_method | string == '9' and lock_action | string == '2' and op_position | string == '1' }}
+
+      # --- 条件 3: 冷却 5 分钟 ---
+      - condition: template
+        value_template: >-
+          {% set last = states('input_datetime.last_night_unlock_alert_at') %}
+          {% if last in ['unknown', 'unavailable', ''] %}
+            true
+          {% else %}
+            {% set last_ts = as_timestamp(last, 0) %}
+            {{ (as_timestamp(now()) - last_ts) >= 300 }}
+          {% endif %}
+
+    action:
+      # 调用告警脚本（连续抓拍 + Telegram 通知）
+      - service: script.send_night_unlock_alert
+
+      # 更新冷却时间戳
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.last_night_unlock_alert_at
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+      # 记录日志
+      - service: system_log.write
+        data:
+          message: >-
+            [夜间监护] H02 门内开锁告警已触发。
+            时间: {{ now().strftime('%Y-%m-%d %H:%M:%S') }}，
+            操作方式: {{ state_attr('event.xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020', '操作方式') }}，
+            锁动作: {{ state_attr('event.xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020', '锁动作') }}
+          level: warning
+
+  # ===========================================================================
+  # H04: 夜间童锁守护
+  # ===========================================================================
+  # 触发：每 10 分钟 (time_pattern)
+  # 条件：夜间时段 23:00~07:30 + 童锁未开启
+  # 动作：发 Telegram 提醒（无法自动开启童锁，降级为提醒）
+  # ===========================================================================
+  - id: night_child_lock_guard
+    alias: "H04 夜间童锁守护"
+    description: >-
+      夜间时段每 10 分钟检查童锁状态。若童锁未开启，发送 Telegram 提醒。
+      因 xiaomi_home 集成未暴露童锁开启服务，当前降级为检测+提醒模式。
+    mode: single
+
+    trigger:
+      - platform: time_pattern
+        minutes: "/10"
+
+    condition:
+      # --- 条件 1: 夜间时段 23:00~07:30（跨天判断） ---
+      - condition: template
+        value_template: >-
+          {% set hour = now().hour %}
+          {% set minute = now().minute %}
+          {% set t = hour * 60 + minute %}
+          {{ t >= 23 * 60 or t < 7 * 60 + 30 }}
+
+      # --- 条件 2: 门状态实体可读且能确认童锁未开启 ---
+      # 判断逻辑：
+      #   - unknown/unavailable → 走 H04-b（不在此处判断）
+      #   - 包含"童锁开" → 童锁已开启，不需要提醒
+      #   - 包含"童锁关" → 童锁明确关闭，需要提醒
+      #   - 不包含任何"童锁"字样（如纯"已上锁"）→ 童锁状态未知，也需要提醒
+      - condition: template
+        value_template: >-
+          {% set door = states('sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021') %}
+          {{ door not in ['unknown', 'unavailable'] and '童锁开' not in door }}
+
+      # --- 条件 3: 冷却 30 分钟（童锁提醒不宜过于频繁，每 30 分钟最多 1 次） ---
+      - condition: template
+        value_template: >-
+          {% set last = states('input_datetime.last_child_lock_reminder_at') %}
+          {% if last in ['unknown', 'unavailable', ''] %}
+            true
+          {% else %}
+            {% set last_ts = as_timestamp(last, 0) %}
+            {{ (as_timestamp(now()) - last_ts) >= 1800 }}
+          {% endif %}
+
+    action:
+      # 发送 Telegram 提醒
+      - service: telegram_bot.send_message
+        data:
+          entity_id: notify.homeassistant_yang_weiyi_6763263062
+          message: >-
+            🔓 *夜间童锁守护提醒*
+
+            时间: {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+            门状态: {{ states('sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021') }}
+
+            ⚠️ 童锁未开启，请手动检查并开启童锁。
+            （xiaomi\_home 集成暂不支持自动开启童锁）
+          parse_mode: markdown
+          disable_notification: false
+        continue_on_error: true
+
+      # 更新冷却时间戳
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.last_child_lock_reminder_at
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+      # 记录日志
+      - service: system_log.write
+        data:
+          message: >-
+            [夜间监护] H04 童锁未开启提醒已发送。
+            时间: {{ now().strftime('%Y-%m-%d %H:%M:%S') }}，
+            门状态: {{ states('sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021') }}
+          level: warning
+
+  # ===========================================================================
+  # H04-b: 门状态不可读时记录警告（不发 Telegram，避免误提醒）
+  # ===========================================================================
+  - id: night_child_lock_guard_unavailable
+    alias: "H04-b 门状态不可读警告"
+    description: >-
+      夜间检查时如果门状态实体不可读（unknown/unavailable），
+      记录警告日志并发一次 Telegram 提醒，标记为集成/配置问题。
+    mode: single
+
+    trigger:
+      - platform: time_pattern
+        minutes: "/10"
+
+    condition:
+      # 夜间时段
+      - condition: template
+        value_template: >-
+          {% set t = now().hour * 60 + now().minute %}
+          {{ t >= 23 * 60 or t < 7 * 60 + 30 }}
+
+      # 门状态不可读
+      - condition: template
+        value_template: >-
+          {{ states('sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021') in ['unknown', 'unavailable'] }}
+
+      # 冷却 60 分钟（集成问题不需要频繁提醒，独立冷却时间戳）
+      - condition: template
+        value_template: >-
+          {% set last = states('input_datetime.last_door_state_unavailable_at') %}
+          {% if last in ['unknown', 'unavailable', ''] %}
+            true
+          {% else %}
+            {{ (as_timestamp(now()) - as_timestamp(last, 0)) >= 3600 }}
+          {% endif %}
+
+    action:
+      - service: system_log.write
+        data:
+          message: >-
+            [夜间监护] H04-b 门状态实体不可读（{{ states('sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021') }}），
+            无法判断童锁状态。请检查 xiaomi_home 集成连接。
+          level: error
+
+      - service: telegram_bot.send_message
+        data:
+          entity_id: notify.homeassistant_yang_weiyi_6763263062
+          message: >-
+            ⚠️ 夜间监护异常
+
+            门状态实体不可读，无法判断童锁是否开启。
+            请检查小米智能家居集成是否正常连接。
+          disable_notification: false
+
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.last_door_state_unavailable_at
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"

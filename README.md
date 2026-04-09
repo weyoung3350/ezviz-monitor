@@ -1,98 +1,47 @@
-# 萤石摄像头老人夜间外出监护告警系统
+# 老人夜间外出监护
 
-在 Mac 本机通过 RTSP 协议接入萤石摄像头，重点监护老人"杨孝治"是否在指定时段出现在"电梯厅"画面中；命中后触发电话告警并保存截图和短视频证据。
+当前主线方案已经切换为：
 
-> **当前状态**：阿里云 VMS 电话告警 SDK 尚未接入，`AliyunVmsClient` 为骨架实现，调用时返回失败。真实电话拨打能力需后续接入 SDK 后才可用。证据保存和终端日志不受影响。
+- Home Assistant 作为中枢
+- 一期只实现夜间门锁告警 + 夜间童锁守护
+- 二期 AI 增强暂不细化、不阻塞当前实现
 
-## 当前目标
+仓库中仍保留了早期 Python 原型代码，但**当前文档口径以 HA 方案为准**。
 
-当前一期目标不是通用陌生人告警，而是：
+## 当前一期目标
 
-- 单机运行
-- 单摄像头监控
-- RTSP 拉流
-- 重点人物识别：`杨孝治`
-- 重点摄像头：`电梯厅`
-- 重点时段：夜间与清晨，以配置为准
-- 电话告警（SDK 待接入）
-- 本地日志输出
-- 截图与短视频证据留存
-- 证据目录磁盘上限控制
+- 夜间时段内，门锁出现“门内开锁”时触发 Telegram 强提醒
+- 触发后连续抓拍电梯厅摄像头快照
+- 同一规则默认 5 分钟内不重复告警
+- 从 `23:00` 起每 10 分钟检查一次童锁状态
+- 若童锁未开启，则发送 Telegram 提醒手动开启
+- 童锁提醒默认 30 分钟内不重复发送
 
-## 依赖
+## 当前主文档
 
-`face_recognition` 和 `Pillow` 是必需依赖。如果安装失败，先安装编译工具：
-
-```bash
-xcode-select --install
-brew install cmake
-python -m pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
-```
-
-如果 `face_recognition` 与 `setuptools` 版本不兼容，优先按项目文档中的风险说明处理。
-
-## 配置
-
-核心配置位于 `config.yaml`，当前应至少包含：
-
-- `电梯厅` 摄像头 RTSP 地址
-- `杨孝治夜间外出监护` 规则
-- 电话告警配置
-- 证据目录上限
-
-详细结构见 [docs/需求文档.md](docs/需求文档.md)。
-
-## 启动检查
-
-```bash
-python main.py --camera 电梯厅 --check
-```
-
-预期至少看到：
-
-- 配置加载成功
-- 指定摄像头存在
-- RTSP 连通性检查结果
-- 杨孝治样本目录检查结果
-- 电话告警状态（当前会输出"SDK 尚未接入，不能真实拨打"）
-
-## 启动监控
-
-```bash
-python main.py --camera 电梯厅
-```
-
-## 目录说明
-
-```text
-main.py
-config.yaml
-known_faces/
-  杨孝治/
-  杨为意/
-  谈凤/
-  杨一帆/
-evidence/
-src/
-  config.py
-  scheduler.py
-  face_registry.py
-  stream.py
-  evidence.py
-  alerts.py
-  notifier.py
-  vision.py
-  phone_alert.py
-  monitor.py
-tests/
-docs/
-```
-
-## 文档
-
-- [需求文档](docs/需求文档.md)
-- [实现计划](docs/plans/2026-04-08-萤石摄像头告警系统实现计划.md)
-- [自测清单](docs/自测清单.md)
-- [任务清单](docs/任务清单.md)
+- [需求文档 v2（HA 自动化）](docs/需求文档-v2-HA自动化.md)
+- [HA 一期自动化实现草案](docs/plans/2026-04-10-HA一期自动化实现草案.md)
+- [设备与系统清单](docs/设备与系统清单.md)
 - [验收测试方案](docs/验收测试方案.md)
+
+## Claude Code 实施文档
+
+- [Claude Code 启动提示词](docs/Claude-Code-启动提示词.md)
+- [Claude Code 执行说明](docs/claude-code-执行说明.md)
+- [任务清单](docs/任务清单.md)
+- [自测清单](docs/自测清单.md)
+
+当前约束：
+
+- 编码阶段要求 Claude Code 采用 teams / 多 agent 协作方式推进
+- 至少拆分为方案、自动化、脚本/通知、联调验证这几类角色
+
+## 文档收敛说明
+
+以下内容已经不再作为当前主线：
+
+- 早期 Mac 本机 RTSP + 人脸识别 + 电话告警方案
+- 面向 Claude Code 交付流程的一组临时执行文档
+- 与旧方案绑定的任务清单、自测清单、手工验证指南和阶段性验收报告
+
+当前如需继续推进实现，应先以 [需求文档 v2（HA 自动化）](docs/需求文档-v2-HA自动化.md) 和 [HA 一期自动化实现草案](docs/plans/2026-04-10-HA一期自动化实现草案.md) 为准；如要交给 Claude Code 实施，则再配合 `docs/Claude-Code-启动提示词.md`、`docs/claude-code-执行说明.md`、`docs/任务清单.md`、`docs/自测清单.md` 使用。
