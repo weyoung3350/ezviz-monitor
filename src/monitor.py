@@ -121,21 +121,33 @@ def _try_identify_person(
     import face_recognition
 
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    face_locations = face_recognition.face_locations(rgb, model="hog")
+    # number_of_times_to_upsample=2: 对图像上采样 2 次以检测更小的人脸（监控距离 3-5m）
+    face_locations = face_recognition.face_locations(rgb, model="hog", number_of_times_to_upsample=2)
 
     if not face_locations:
+        logger.debug("未检测到人脸（HOG, upsample=2）")
         return None
 
     face_encodings = face_recognition.face_encodings(rgb, face_locations)
+    logger.debug("检测到 %d 张人脸，位置: %s", len(face_locations), face_locations)
 
     for encoding in face_encodings:
-        for name, known_enc in known_encodings:
-            matches = face_recognition.compare_faces([known_enc], encoding, tolerance=0.6)
-            if matches[0]:
-                logger.debug("识别到人物: %s", name)
-                return name
+        distances = face_recognition.face_distance(
+            [enc for _, enc in known_encodings], encoding,
+        )
+        for i, (name, _) in enumerate(known_encodings):
+            logger.debug("与 %s 的距离: %.3f", name, distances[i])
 
-    logger.debug("检测到人脸但未匹配已知人物")
+        best_idx = int(distances.argmin())
+        best_dist = distances[best_idx]
+        best_name = known_encodings[best_idx][0]
+
+        if best_dist <= 0.6:
+            logger.info("识别到人物: %s (距离=%.3f)", best_name, best_dist)
+            return best_name
+
+    logger.debug("检测到 %d 张人脸但未匹配已知人物（最近: %s 距离=%.3f）",
+                 len(face_locations), best_name, best_dist)
     return None
 
 

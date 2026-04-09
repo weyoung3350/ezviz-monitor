@@ -19,6 +19,16 @@ cameras:
 
   - name: "四楼阳台"
     rtsp_url: "rtsp://admin:IJVZKK@192.168.77.43:554/h265/ch1/main/av_stream"
+    monitor_rules:
+      - rule_name: "杨孝治夜间外出监护"
+        person_name: "杨孝治"
+        alert_schedules:
+          - start: "00:00"
+            end: "23:59"
+        actions:
+          - "phone_call"
+          - "terminal_log"
+          - "save_evidence"
 
   - name: "三楼阳台"
     rtsp_url: "rtsp://admin:GDOOUB@192.168.77.115:554/h265/ch1/main/av_stream"
