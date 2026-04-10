@@ -28,10 +28,9 @@
 - HA script 负责整理通知参数
 - AppDaemon `NotifyService` 负责统一通知
 
-当前一期范围只有 3 项：
+当前一期范围只有 2 项：
 
 - 夜间门内开锁告警
-- 夜间童锁守护
 - 统一通知服务 NotifyService
 
 当前明确不做：
@@ -49,8 +48,6 @@
   `sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021`
 - 摄像头实体：
   `camera.dian_ti_ting_mainstream`
-- 童锁开启服务：
-  当前不可用，`xiaomi_home` 未暴露可调用能力
 - 当前 Telegram 底层链路：
   `telegram_bot.send_message`
   `telegram_bot.send_photo`
@@ -58,8 +55,6 @@
   业务 YAML 不再直接调用 Telegram，而是统一发 `notify_service_request`
 - 夜间门内开锁告警冷却：
   5 分钟
-- 童锁提醒冷却：
-  30 分钟
 - 夜间时段：
   23:00 ~ 07:30
 
@@ -90,14 +85,13 @@
 
 3. 保留当前一期业务约束
 - 夜间门内开锁仍是主触发
-- 童锁仍是“检测未开启 -> 提醒手动处理”
 - 抓拍失败仍必须有明确文字兜底
 - 冷却逻辑不能退化
 
 4. 补齐验证与回填
 - 对照 `docs/自测清单.md`
 - 至少补 `NotifyService` 基础验证
-- 至少补夜间门锁告警与童锁守护的联调记录
+- 至少补夜间门锁告警联调记录
 - 每完成一个任务都更新 `docs/任务清单.md`
 
 实施要求：

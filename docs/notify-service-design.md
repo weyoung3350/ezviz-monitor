@@ -10,15 +10,14 @@
 当前要解决的不是“做一个通用通知平台”，而是先把夜间监护一期的通知链路收口：
 
 - 业务 YAML 不再直接调用 `telegram_bot.send_message/send_photo`
-- 夜间门内开锁告警和童锁守护都统一走 `notify_service_request`
+- 夜间门内开锁告警统一走 `notify_service_request`
 - 静默规则、强制响铃、图片发送、电话容错都放到同一层处理
 
 ## 2. 当前范围
 
-当前一期内，`NotifyService` 只服务 2 条业务链路：
+当前一期内，`NotifyService` 只服务 1 条业务链路：
 
 1. 夜间门内开锁告警
-2. 夜间童锁守护提醒
 
 当前一期内，`NotifyService` 只要求做到：
 
@@ -189,7 +188,6 @@ Telegram 处理规则：
 注意：
 
 - 夜间门内开锁告警默认 `force_sound = true`
-- 童锁守护提醒默认 `force_sound = false`
 
 ## 8. 电话通道设计
 
@@ -285,16 +283,12 @@ notify_service:
 - 最终不再直接调用 Telegram
 - 改为统一发出 `notify_service_request`
 
-建议输出两类请求：
+建议输出一类请求：
 
 1. 夜间门内开锁告警
    - `channel: telegram`
    - `force_sound: true`
    - 有图时带 `image_path`
-2. 童锁提醒
-   - `channel: telegram`
-   - `force_sound: false`
-   - 无图
 
 ## 12. 实施顺序
 
@@ -323,15 +317,13 @@ Claude Code 应按这个顺序实现：
 | V6 | `channel=phone` 且电话未启用 | 不阻断，请求有结果事件和错误说明 |
 | V7 | `channel=all` 且电话失败 | Telegram 仍成功 |
 | V8 | night_guard 门锁告警 | 业务层成功发出 `notify_service_request` |
-| V9 | 童锁守护提醒 | 业务层成功发出 `notify_service_request` |
-
 ## 14. 成功标准
 
 这份设计落地后，一期通知链路要满足：
 
 - 业务层不再直接耦合 Telegram
 - `NotifyService` 成为唯一通知入口
-- 夜间监护两条业务都已接入
+- 夜间门锁告警业务已接入
 - Telegram 通道完成联调
 - 电话通道至少完成代码路径、配置和失败隔离
 
