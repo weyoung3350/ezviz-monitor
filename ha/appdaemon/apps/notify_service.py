@@ -1,8 +1,8 @@
 """
 统一通知服务 — AppDaemon App
 
-监听 notify_service_request 事件，将通知分发到 Telegram / 电话通道。
-支持静默规则、force_sound、图片发送、双通道独立容错。
+监听 notify_service_request 事件，将通知分发到 Telegram / iOS 推送 / 电话通道。
+支持静默规则、force_sound、图片发送、多通道独立容错。
 
 业务侧只需 fire_event("notify_service_request", ...)，
 本服务统一处理下发逻辑并发布 notify_service_result 结果事件。
@@ -21,6 +21,10 @@ class NotifyService(hass.Hass):
         # HA 2026 版 telegram_bot 服务需要 entity_id 而非 chat_id
         self.telegram_entity_id = self.args.get("telegram_entity_id", "")
         self.telegram_parse_mode = self.args.get("telegram_parse_mode", "markdown")
+
+        # ── iOS Companion App 推送配置 ──
+        self.ios_push_service = self.args.get("ios_push_service", "")
+        self.ios_push_enabled = bool(self.ios_push_service)
 
         # ── 静默时段 ──
         self.silent_start = self.args.get("silent_start", "23:00")
@@ -43,6 +47,7 @@ class NotifyService(hass.Hass):
         self.listen_event(self.on_notify_request, "notify_service_request")
         self.log("NotifyService 已启动 | "
                  f"静默时段 {self.silent_start}~{self.silent_end} | "
+                 f"iOS推送 {'已启用' if self.ios_push_enabled else '已关闭'} | "
                  f"电话通道 {'已启用' if self.phone_enabled else '已关闭'}")
 
     # ══════════════════════════════════════════════════════════
@@ -87,6 +92,7 @@ class NotifyService(hass.Hass):
 
         # ── 初始化结果 ──
         telegram_result = {"attempted": False, "success": False, "error": None}
+        ios_push_result = {"attempted": False, "success": False, "error": None}
         phone_result = {"attempted": False, "success": False, "error": None}
 
         # ── Telegram 通道 ──
@@ -98,6 +104,20 @@ class NotifyService(hass.Hass):
                          level="ERROR")
             else:
                 telegram_result = self._send_telegram(
+                    message=message,
+                    title=title,
+                    image_path=image_path,
+                    force_sound=force_sound,
+                    request_id=request_id,
+                )
+
+        # ── iOS Companion App 推送通道 ──
+        if channel in ("ios_push", "all"):
+            if not message:
+                ios_push_result["attempted"] = True
+                ios_push_result["error"] = "message 为空"
+            else:
+                ios_push_result = self._send_ios_push(
                     message=message,
                     title=title,
                     image_path=image_path,
@@ -121,10 +141,12 @@ class NotifyService(hass.Hass):
             "source": source,
             "channel": channel,
             "telegram": telegram_result,
+            "ios_push": ios_push_result,
             "phone": phone_result,
         })
         self.log(f"通知完成 | request_id={request_id} "
-                 f"telegram={telegram_result} phone={phone_result}")
+                 f"telegram={telegram_result} ios_push={ios_push_result} "
+                 f"phone={phone_result}")
 
     # ══════════════════════════════════════════════════════════
     #  Telegram 通道
@@ -195,6 +217,58 @@ class NotifyService(hass.Hass):
             self.log(f"Telegram 发送失败 | request_id={request_id} error={e}",
                      level="ERROR")
             return result
+
+    # ══════════════════════════════════════════════════════════
+    #  iOS Companion App 推送通道
+    # ══════════════════════════════════════════════════════════
+
+    def _send_ios_push(self, message, title, image_path, force_sound, request_id):
+        """通过 HA Companion App 发送 iOS 推送通知。"""
+        result = {"attempted": False, "success": False, "error": None}
+
+        if not self.ios_push_enabled:
+            result["error"] = "iOS push not configured"
+            return result
+
+        result["attempted"] = True
+
+        try:
+            # 构建通知数据
+            service_data = {
+                "message": message,
+                "title": title or "Home Assistant",
+            }
+
+            # iOS 推送的声音控制
+            push_data = {}
+            if force_sound:
+                push_data["push"] = {"sound": {"name": "default", "critical": 1, "volume": 1.0}}
+            elif self._is_silent_time():
+                push_data["push"] = {"sound": "none"}
+
+            # 图片附件（HA Companion App 支持通过 /local/ 路径发图）
+            if image_path:
+                # 将 /config/www/xxx.jpg 转为 /local/xxx.jpg URL
+                local_url = image_path.replace("/config/www/", "/local/")
+                push_data["attachment"] = {"url": local_url, "content-type": "jpeg"}
+
+            if push_data:
+                service_data["data"] = push_data
+
+            # 调用 notify 服务（如 notify.mobile_app_iphone_dna）
+            self.call_service(
+                self.ios_push_service.replace(".", "/", 1),
+                **service_data
+            )
+            result["success"] = True
+            self.log(f"iOS 推送已发送 | request_id={request_id}")
+
+        except Exception as e:
+            result["error"] = str(e)
+            self.log(f"iOS 推送失败 | request_id={request_id} error={e}",
+                     level="ERROR")
+
+        return result
 
     # ══════════════════════════════════════════════════════════
     #  电话通道

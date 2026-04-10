@@ -10,6 +10,9 @@ notify_service:
   telegram_entity_id: "<Telegram notify entity_id, 如 notify.homeassistant_yang_weiyi_6763263062>"
   telegram_parse_mode: "markdown"
 
+  # iOS Companion App 推送（留空则不启用）
+  ios_push_service: "<notify 服务名，如 notify.mobile_app_dna_iphone15p>"
+
   # 静默时段（跨天，在此时段内且 force_sound=false 时 Telegram 静默送达）
   silent_start: "23:00"
   silent_end: "07:00"
