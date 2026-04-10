@@ -15,11 +15,11 @@
 #         night_guard_auto: !include packages/night_guard_automations.yaml
 #         night_guard_scripts: !include packages/night_guard_scripts.yaml
 #
-#   Telegram 通知实体: notify.homeassistant_yang_weiyi_6763263062
+#   通知服务: AppDaemon NotifyService（事件驱动）
 #
 # 依赖：
 #   - night_guard_scripts.yaml（告警脚本，必须同时加载）
-#   - Telegram 集成（telegram_bot 服务）
+#   - AppDaemon NotifyService（事件驱动通知）
 #
 # =============================================================================
 
@@ -167,20 +167,18 @@ automation:
           {% endif %}
 
     action:
-      # 发送 Telegram 提醒
-      - service: telegram_bot.send_message
-        data:
-          entity_id: notify.homeassistant_yang_weiyi_6763263062
+      # 发送童锁提醒（通过 NotifyService）
+      - event: notify_service_request
+        event_data:
+          channel: "telegram"
+          title: "夜间童锁守护提醒"
           message: >-
-            🔓 *夜间童锁守护提醒*
-
             时间: {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
             门状态: {{ states('sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021') }}
-
             ⚠️ 童锁未开启，请手动检查并开启童锁。
-            （xiaomi\_home 集成暂不支持自动开启童锁）
-          parse_mode: markdown
-          disable_notification: false
+          force_sound: false
+          request_id: "child_lock_{{ now().strftime('%Y%m%d_%H%M%S') }}"
+          source: "night_guard.child_lock"
         continue_on_error: true
 
       # 更新冷却时间戳
@@ -243,15 +241,17 @@ automation:
             无法判断童锁状态。请检查 xiaomi_home 集成连接。
           level: error
 
-      - service: telegram_bot.send_message
-        data:
-          entity_id: notify.homeassistant_yang_weiyi_6763263062
+      - event: notify_service_request
+        event_data:
+          channel: "telegram"
+          title: "夜间监护异常"
           message: >-
-            ⚠️ 夜间监护异常
-
             门状态实体不可读，无法判断童锁是否开启。
             请检查小米智能家居集成是否正常连接。
-          disable_notification: false
+          force_sound: true
+          request_id: "door_unavail_{{ now().strftime('%Y%m%d_%H%M%S') }}"
+          source: "night_guard.door_unavailable"
+        continue_on_error: true
 
       - service: input_datetime.set_datetime
         target:

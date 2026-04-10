@@ -1,0 +1,23 @@
+# ── 统一通知服务 ──
+# 部署时将本段内容合并到 /addon_configs/a0d7b954_appdaemon/apps/apps.yaml
+# 敏感信息（chat_id、AccessKey 等）只在实际部署文件中填写，不要提交到仓库
+
+notify_service:
+  module: notify_service
+  class: NotifyService
+
+  # Telegram 配置（HA 2026 版 telegram_bot 服务需要 entity_id）
+  telegram_entity_id: "<Telegram notify entity_id, 如 notify.homeassistant_yang_weiyi_6763263062>"
+  telegram_parse_mode: "markdown"
+
+  # 静默时段（跨天，在此时段内且 force_sound=false 时 Telegram 静默送达）
+  silent_start: "23:00"
+  silent_end: "07:00"
+
+  # 电话通道配置（默认关闭）
+  phone_enabled: false
+  vms_access_key_id: "<AccessKey ID>"
+  vms_access_key_secret: "<AccessKey Secret>"
+  vms_called_number: "<被叫号码>"
+  vms_tts_code: "<TTS 模板编号>"
+  vms_called_show_number: "<显示号码>"

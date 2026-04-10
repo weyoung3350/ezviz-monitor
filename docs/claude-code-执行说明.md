@@ -6,11 +6,11 @@
 
 1. 夜间门内开锁告警
 2. 夜间童锁守护
+3. 统一通知服务 NotifyService
 
 不在本轮实现范围内：
 
 - 二期 AI 增强
-- AppDaemon
 - 旧 Python RTSP 主流程
 - 通用人物识别
 
@@ -20,17 +20,18 @@
 
 1. `docs/需求文档-v2-HA自动化.md`
 2. `docs/plans/2026-04-10-HA一期自动化实现草案.md`
-3. `docs/设备与系统清单.md`
-4. `docs/验收测试方案.md`
-5. `docs/任务清单.md`
-6. `docs/自测清单.md`
-7. `PROJECT_MEMORY.md`
+3. `docs/notify-service-design.md`
+4. `docs/设备与系统清单.md`
+5. `docs/验收测试方案.md`
+6. `docs/任务清单.md`
+7. `docs/自测清单.md`
+8. `PROJECT_MEMORY.md`
 
 若文档冲突，优先级按以上顺序处理。
 
 ## 3. 实施约束
 
-- 只在 HA 自动化与 script 范围内设计和实现
+- 允许在 HA 自动化 / script + AppDaemon `NotifyService` 范围内设计和实现
 - 不擅自恢复旧 Python 方案为主线
 - 不擅自扩展到二期 AI
 - 不擅自新增数据库、后台、App、网页 UI
@@ -51,12 +52,16 @@ Claude Code 在当前项目中，编码阶段至少要拆成以下角色：
    - 负责门内开锁告警自动化
    - 负责夜间时段判断、冷却逻辑、触发链路
 
-3. HA Script / 通知工程师
+3. AppDaemon 通知服务工程师
+   - 负责 `NotifyService`
+   - 负责 Telegram / 电话通道、静默规则、统一事件接口
+
+4. HA Script / 编排工程师
    - 负责连续抓拍脚本
-   - 负责 Telegram 文字与图片通知
+   - 负责构造 `notify_service_request`
    - 负责失败兜底
 
-4. 联调 / 验证工程师
+5. 联调 / 验证工程师
    - 负责核对实体与服务
    - 负责按自测清单验证
    - 负责记录阻塞与风险
@@ -73,7 +78,7 @@ Claude Code 在当前项目中，编码阶段至少要拆成以下角色：
 优先完成以下事项：
 
 1. 确认门锁事件、门状态、童锁状态、童锁服务、摄像头快照、Telegram 发送方式
-2. 产出一期 HA 自动化 YAML 与 script 草案
+2. 产出一期 HA 自动化 YAML、script 与 NotifyService 草案
 3. 对照自测清单完成最相关验证
 4. 更新任务清单状态
 

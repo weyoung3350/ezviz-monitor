@@ -10,7 +10,7 @@
 #        allowlist_external_dirs:
 #          - /config/www
 #
-#   2. Telegram Bot 集成已配置且 chat_id 可用
+#   2. AppDaemon NotifyService 已部署
 #
 #   3. 摄像头 camera.dian_ti_ting_mainstream 已通过 ONVIF 集成接入
 # =============================================================================
@@ -43,20 +43,20 @@ script:
       # ================================================================
       # 第 1 步：立即发送首条文字告警（不等抓拍，确保最快通知）
       # ================================================================
-      - alias: "立即发送首条文字告警"
-        service: telegram_bot.send_message
-        data:
-          entity_id: notify.homeassistant_yang_weiyi_6763263062
+      - alias: "立即发送首条告警（通过 NotifyService）"
+        event: notify_service_request
+        event_data:
+          channel: "all"
+          title: "夜间门内开锁告警"
           message: >-
-            ⚠️ 夜间门内开锁告警
-
             时间：{{ alert_time_display }}
-
             门锁状态：门内按钮开锁
-
             正在抓拍电梯厅画面...
-          disable_notification: false  # 强制响铃
-        continue_on_error: true  # Telegram 不可用时不中断后续抓拍流程
+          phone_alert_name: "夜间门内开锁"
+          force_sound: true
+          request_id: "night_unlock_{{ alert_timestamp }}"
+          source: "night_guard.unlock_alert"
+        continue_on_error: true  # 事件发送失败时不中断后续抓拍流程
 
       # ================================================================
       # 第 2 步：立即开始抓拍（不等门状态，避免阻塞 10 秒）
@@ -140,25 +140,24 @@ script:
       # ================================================================
       # 只有记录到候选快照路径时才尝试发图。
       # 这仍不代表文件一定真实落盘，因此后续详情通知必须继续说明结果不确定性。
-      - alias: "尝试发送图片通知"
+      - alias: "发送快照通知（通过 NotifyService）"
         if:
           - condition: template
             value_template: "{{ last_successful_snapshot != '' }}"
         then:
-          - service: telegram_bot.send_photo
-            data:
-              entity_id: notify.homeassistant_yang_weiyi_6763263062
-              file: "{{ last_successful_snapshot }}"
-              caption: >-
-                📷 电梯厅快照
-
+          - event: notify_service_request
+            event_data:
+              channel: "telegram"
+              title: "电梯厅快照"
+              message: >-
                 时间：{{ alert_time_display }}
-
                 门状态：{{ door_confirmed_text }}
-
                 抓拍：{{ snapshot_count }} 次尝试
+              image_path: "{{ last_successful_snapshot }}"
+              force_sound: false
+              request_id: "night_unlock_photo_{{ alert_timestamp }}"
+              source: "night_guard.unlock_alert"
             continue_on_error: true
-            response_variable: send_photo_result
           - variables:
               photo_attempted: true
 
@@ -167,23 +166,24 @@ script:
       # send_photo 是否真正成功（文件可能因 allowlist、磁盘空间等原因未落盘）。
       # 因此始终发送一条详情文字通知（静默），确保用户至少能收到完整信息。
       # 如果图片发送成功，用户会看到图片+详情两条；如果失败，至少有详情兜底。
-      - alias: "发送详情文字通知（兜底 + 门状态确认）"
-        service: telegram_bot.send_message
-        data:
-          entity_id: notify.homeassistant_yang_weiyi_6763263062
+      - alias: "发送详情兜底（通过 NotifyService）"
+        event: notify_service_request
+        event_data:
+          channel: "telegram"
           message: >-
             📋 告警详情
-
             时间：{{ alert_time_display }}
             门状态：{{ door_confirmed_text }}
             抓拍尝试：{{ snapshot_count }} 次
             {% if last_successful_snapshot == '' %}
             ❌ 全部抓拍失败，请打开摄像头查看
             {% elif photo_attempted %}
-            ℹ️ 已尝试发送图片：{{ last_successful_snapshot }}
-            若未收到上一条图片消息，则说明本次快照写入或图片发送失败，请按本条文字告警处理
+            ℹ️ 已尝试发送图片
             {% endif %}
-          disable_notification: true  # 静默，不重复响铃
+          force_sound: false
+          request_id: "night_unlock_detail_{{ alert_timestamp }}"
+          source: "night_guard.unlock_alert"
+        continue_on_error: true
 
       # ================================================================
       # 结束：写日志记录本次告警执行完成

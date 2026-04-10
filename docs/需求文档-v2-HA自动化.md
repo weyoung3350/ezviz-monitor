@@ -79,10 +79,12 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
    - 默认参数：**5 次抓拍，每次间隔 5 秒**（共 20 秒），均为可配置项
 
 2. **发送 Telegram 通知**
-   - 接收人：当前用户（`chat_id` 通过 HA secrets 或运行配置注入）
+   - 一期业务层不再直接调用 `telegram_bot.send_message/send_photo`
+   - 统一通过 AppDaemon `NotifyService` 发出 `notify_service_request`
+   - 当前已落地通道仍为 Telegram，接收人配置通过 AppDaemon `apps.yaml` 注入
    - 内容：文字描述 + 电梯厅快照图片
    - 文字示例：`⚠️ 夜间门内开锁告警\n时间：{{ now().strftime('%H:%M:%S') }}\n门锁状态：门内按钮开锁\n门状态确认：{{ 已确认开门 / 未确认门状态 }}`
-   - **强制响铃**（`disable_notification: false`），不受 23:00~07:00 静默规则约束
+   - **强制响铃** 通过统一通知服务的 `force_sound: true` 表达，不受 23:00~07:00 静默规则约束
    - 【Codex 修改】若全部抓拍尝试均失败，也必须先发纯文字告警，文案明确写出“快照抓取失败”，不能因为图片失败而吞掉告警
 
 ### 4.4 冷却机制
@@ -111,7 +113,7 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
   - 当前处于夜间时段
   - 童锁状态为未开启
 - 执行动作：
-  - 发送一次“童锁未开启，请手动处理”的 Telegram 提醒
+  - 通过统一通知服务发送一次“童锁未开启，请手动处理”的提醒
   - 记录一次“童锁未开启提醒”日志
 - 约束：
   - 童锁守护自动化与“门内开锁告警”自动化分开实现，避免职责混杂
@@ -120,9 +122,12 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
 
 ### 4.7 实现方式
 
-- HA 自动化 YAML（automation）
-- 【Codex 修改】允许使用 HA `script` 配合自动化实现“等待门状态 / 连续抓拍 / 失败兜底 / 童锁提醒”，但一期仍不引入额外 Python 脚本或 AppDaemon
-- 所有逻辑在 HA 内完成
+- HA 自动化 YAML（automation）负责触发、编排、冷却和抓拍
+- HA `script` 负责等待门状态、连续抓拍、整理通知参数
+- 【Codex 修改】一期通知层统一采用 AppDaemon `NotifyService`
+- HA 业务自动化与脚本通过 `event: notify_service_request` 调用通知服务
+- `NotifyService` 统一处理 Telegram、电话、静默时间、强制响铃和通道容错
+- 当前一期联调与验收以 Telegram 通道为主；电话通道已纳入统一接口，但是否正式启用以联调结果为准
 
 ---
 
@@ -182,8 +187,8 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
 
 | 通道 | 方式 | 状态 |
 |------|------|------|
-| Telegram | `telegram_bot.send_message` + `telegram_bot.send_photo` | 已验证 |
-| 电话 | 阿里云 VMS | 未接入，后续考虑 |
+| Telegram | AppDaemon `NotifyService` -> Telegram 通道 | 已验证底层链路 |
+| 电话 | AppDaemon `NotifyService` -> 阿里云 VMS | 纳入一期架构，启用待联调 |
 
 ---
 
@@ -211,9 +216,10 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
 3. 从室外开锁（指纹/密码/NFC）→ 不告警
 4. 【Codex 修改】默认 5 分钟冷却期内重复开锁 → 不重复告警
 5. 超过默认 5 分钟后再次开锁 → 重新告警
-6. Telegram 通知强制响铃，不受静默规则影响
+6. 监护告警通过统一通知服务强制响铃，不受静默规则影响
 7. 【Codex 修改】夜间时段内，每 10 分钟执行一次童锁检查；若发现童锁未开启，则发送 Telegram 提醒手动处理
 8. 【Codex 修改】同一童锁未开启提醒默认 30 分钟内不重复发送
+9. 【Codex 修改】夜间监护一期业务层统一通过 `notify_service_request` 发起通知，不再在业务 YAML 中散落调用 Telegram 服务
 
 ### 二期
 
@@ -227,7 +233,8 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
 - 一期不使用人脸识别，不拉视频流
 - 【Codex 修改】童锁属于一期主动预防能力的一部分；系统在夜间时段内需要定期检查，并在未开启时提醒家人手动处理
 - CW500 室外摄像头暂不接入（xiaomi_home 不支持视频流）
-- 告警通道暂时只有 Telegram，电话告警后续独立需求
+- 一期通知层统一走 `NotifyService`，业务层不再直接绑定 Telegram 服务
+- 当前已验证通道为 Telegram；电话通道与统一通知服务一起设计和实现，但真实启用不作为一期上线前的唯一阻塞项
 - 【Codex 修改】二期目前仅为预留增强项，不作为当前一期交付和验收阻塞项
 - 【Codex 修改】若后续接入 AI，其结论属于辅助判断，不应脱离门锁、门状态或路径上下文单独下“已外出”结论
 - 【Codex 修改】当前主目标只覆盖“独自外出”风险；若明确存在陪同人员，则记录观察日志，但不触发主告警
