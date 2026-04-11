@@ -31,3 +31,44 @@ notify_service:
   vms_called_number: "<被叫号码>"
   vms_tts_code: "<TTS 模板编号>"
   vms_called_show_number: "<显示号码>"
+
+
+# ── 夜间监护编排器 ──
+# 监听 night_guard.door_unlock_trigger 事件，执行完整告警编排流程：
+#   1. 总开关 / 时段 / 冷却三重判断（全部通过 HA helper 配置）
+#   2. 立即发主告警事件（channel=all，含电话响铃）
+#   3. 连续抓拍 + 门状态观察
+#   4. 发快照通知事件（channel=[dingtalk, ios_push]）
+#   5. 发详情兜底事件（channel=[dingtalk, ios_push]）
+#
+# 前置条件：
+#   - input_boolean.night_guard_enabled（总开关，默认 on）
+#   - input_datetime.night_guard_start / night_guard_end（告警时段）
+#   - input_datetime.last_night_unlock_alert_at（冷却时间戳）
+#   - HA automation 已改造为"仅三元组过滤 + fire night_guard.door_unlock_trigger"
+#   - AppDaemon NotifyService 已启用
+
+night_guard_orchestrator:
+  module: night_guard_orchestrator
+  class: NightGuardOrchestrator
+
+  # 设备实体
+  camera_entity: "camera.dian_ti_ting_mainstream"
+  door_state_entity: "sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021"
+
+  # 抓拍参数
+  snapshot_count: 5
+  snapshot_interval_seconds: 5
+  snapshot_dir: "/config/www"
+  snapshot_filename_template: "night_alert_{timestamp}_{index}.jpg"
+
+  # 冷却（秒）
+  cooldown_seconds: 300
+
+  # HA helper 实体（需先在 HA configuration.yaml 中声明）
+  helper_enabled: "input_boolean.night_guard_enabled"
+  helper_window_start: "input_datetime.night_guard_start"
+  helper_window_end: "input_datetime.night_guard_end"
+  helper_last_alert: "input_datetime.last_night_unlock_alert_at"
+
+  log_prefix: "[night_guard]"
