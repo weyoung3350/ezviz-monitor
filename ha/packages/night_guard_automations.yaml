@@ -85,7 +85,7 @@ automation:
           {% endif %}
 
     action:
-      # 调用告警脚本（连续抓拍 + Telegram 通知）
+      # 调用告警脚本（连续抓拍 + 钉钉 + iOS 推送 + 电话 通知）
       - service: script.send_night_unlock_alert
 
       # 更新冷却时间戳

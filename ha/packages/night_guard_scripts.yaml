@@ -147,7 +147,7 @@ script:
         then:
           - event: notify_service_request
             event_data:
-              channel: "telegram"
+              channel: ["dingtalk", "ios_push"]
               title: "电梯厅快照"
               message: >-
                 时间：{{ alert_time_display }}
@@ -169,7 +169,7 @@ script:
       - alias: "发送详情兜底（通过 NotifyService）"
         event: notify_service_request
         event_data:
-          channel: "telegram"
+          channel: ["dingtalk", "ios_push"]
           message: >-
             📋 告警详情
             时间：{{ alert_time_display }}

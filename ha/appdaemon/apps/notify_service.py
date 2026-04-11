@@ -1,14 +1,31 @@
 """
 统一通知服务 — AppDaemon App
 
-监听 notify_service_request 事件，将通知分发到 Telegram / iOS 推送 / 电话通道。
+监听 notify_service_request 事件，将通知分发到 钉钉 / iOS 推送 / 电话通道。
 支持静默规则、force_sound、图片发送、多通道独立容错。
 
 业务侧只需 fire_event("notify_service_request", ...)，
 本服务统一处理下发逻辑并发布 notify_service_result 结果事件。
+
+channel 字段支持：
+  - 单个字符串："dingtalk" / "ios_push" / "phone" / "all"
+  - 字符串数组：["dingtalk", "ios_push"]（多通道并发，不含未列出的通道）
+  - "all" 等价于 ["dingtalk", "ios_push", "phone"]
+
+异步调度：
+  - on_notify_request 是 async 回调，三个通道通过 asyncio.to_thread + gather 并发执行
+  - 各 _send_* 方法保持 sync 实现（内部调用第三方 SDK / HTTP / self.call_service），
+    由 asyncio.to_thread 将其派发到线程池执行，避免阻塞 AppDaemon 事件循环。
 """
 
+import asyncio
+import base64
+import hashlib
+import hmac
 import json
+import time
+import urllib.parse
+import urllib.request
 from datetime import datetime
 
 import appdaemon.plugins.hass.hassapi as hass
@@ -17,10 +34,14 @@ import appdaemon.plugins.hass.hassapi as hass
 class NotifyService(hass.Hass):
 
     def initialize(self):
-        # ── Telegram 配置 ──
-        # HA 2026 版 telegram_bot 服务需要 entity_id 而非 chat_id
-        self.telegram_entity_id = self.args.get("telegram_entity_id", "")
-        self.telegram_parse_mode = self.args.get("telegram_parse_mode", "markdown")
+        # ── 钉钉自定义机器人配置 ──
+        self.dingtalk_webhook = self.args.get("dingtalk_webhook", "")
+        self.dingtalk_secret = self.args.get("dingtalk_secret", "")
+        self.dingtalk_image_base_url = self.args.get(
+            "dingtalk_image_base_url",
+            "http://192.168.77.253:8123/local/",
+        )
+        self.dingtalk_enabled = bool(self.dingtalk_webhook and self.dingtalk_secret)
 
         # ── iOS Companion App 推送配置 ──
         self.ios_push_service = self.args.get("ios_push_service", "")
@@ -47,6 +68,7 @@ class NotifyService(hass.Hass):
         self.listen_event(self.on_notify_request, "notify_service_request")
         self.log("NotifyService 已启动 | "
                  f"静默时段 {self.silent_start}~{self.silent_end} | "
+                 f"钉钉 {'已启用' if self.dingtalk_enabled else '已关闭'} | "
                  f"iOS推送 {'已启用' if self.ios_push_enabled else '已关闭'} | "
                  f"电话通道 {'已启用' if self.phone_enabled else '已关闭'}")
 
@@ -73,12 +95,32 @@ class NotifyService(hass.Hass):
             self.log(f"VMS 客户端初始化失败: {e}", level="WARNING")
 
     # ══════════════════════════════════════════════════════════
-    #  事件处理入口
+    #  通道解析
     # ══════════════════════════════════════════════════════════
 
-    def on_notify_request(self, event_name, data, kwargs):
-        """处理 notify_service_request 事件，分发到各通道。"""
-        channel = data.get("channel", "telegram")
+    def _resolve_channels(self, channel_raw):
+        """将 channel 字段规范化为小写字符串列表。"""
+        if isinstance(channel_raw, str):
+            return [channel_raw.strip().lower()]
+        if isinstance(channel_raw, (list, tuple)):
+            return [str(c).strip().lower() for c in channel_raw]
+        return ["dingtalk"]
+
+    def _channel_active(self, channels, name):
+        return "all" in channels or name in channels
+
+    # ══════════════════════════════════════════════════════════
+    #  事件处理入口（异步，三通道并发）
+    # ══════════════════════════════════════════════════════════
+
+    async def on_notify_request(self, event_name, data, kwargs):
+        """处理 notify_service_request 事件，三通道并发分发。
+
+        同步的 _send_dingtalk / _send_ios_push / _send_phone 通过
+        asyncio.to_thread 派发到线程池，由 asyncio.gather 并发等待，
+        总耗时 ≈ max(各通道)，不会阻塞 AppDaemon 事件循环。
+        """
+        channels = self._resolve_channels(data.get("channel", "dingtalk"))
         message = data.get("message", "")
         title = data.get("title", "")
         image_path = data.get("image_path", "")
@@ -88,135 +130,180 @@ class NotifyService(hass.Hass):
         source = data.get("source", "")
 
         self.log(f"收到通知请求 | request_id={request_id} source={source} "
-                 f"channel={channel} force_sound={force_sound}")
+                 f"channels={channels} force_sound={force_sound}")
 
         # ── 初始化结果 ──
-        telegram_result = {"attempted": False, "success": False, "error": None}
+        dingtalk_result = {"attempted": False, "success": False, "error": None}
         ios_push_result = {"attempted": False, "success": False, "error": None}
         phone_result = {"attempted": False, "success": False, "error": None}
 
-        # ── Telegram 通道 ──
-        if channel in ("telegram", "all"):
+        # ── 构造并发任务 ──
+        tasks: dict[str, asyncio.Task] = {}
+
+        # 钉钉通道
+        if self._channel_active(channels, "dingtalk"):
             if not message:
-                telegram_result["attempted"] = True
-                telegram_result["error"] = "message 为空，无法发送 Telegram"
-                self.log(f"Telegram 跳过: message 为空 | request_id={request_id}",
+                dingtalk_result = {
+                    "attempted": True,
+                    "success": False,
+                    "error": "message 为空，无法发送钉钉",
+                }
+                self.log(f"钉钉 跳过: message 为空 | request_id={request_id}",
                          level="ERROR")
             else:
-                telegram_result = self._send_telegram(
+                tasks["dingtalk"] = asyncio.create_task(asyncio.to_thread(
+                    self._send_dingtalk,
                     message=message,
                     title=title,
                     image_path=image_path,
-                    force_sound=force_sound,
                     request_id=request_id,
-                )
+                ))
 
-        # ── iOS Companion App 推送通道 ──
-        if channel in ("ios_push", "all"):
+        # iOS Companion App 推送通道
+        if self._channel_active(channels, "ios_push"):
             if not message:
-                ios_push_result["attempted"] = True
-                ios_push_result["error"] = "message 为空"
+                ios_push_result = {
+                    "attempted": True,
+                    "success": False,
+                    "error": "message 为空",
+                }
             else:
-                ios_push_result = self._send_ios_push(
+                tasks["ios_push"] = asyncio.create_task(asyncio.to_thread(
+                    self._send_ios_push,
                     message=message,
                     title=title,
                     image_path=image_path,
                     force_sound=force_sound,
                     request_id=request_id,
-                )
+                ))
 
-        # ── 电话通道 ──
-        if channel in ("phone", "all"):
-            # 回退 phone_alert_name
+        # 电话通道
+        if self._channel_active(channels, "phone"):
             if not phone_alert_name:
                 phone_alert_name = title or message[:20] or "HA通知"
-            phone_result = self._send_phone(
+            tasks["phone"] = asyncio.create_task(asyncio.to_thread(
+                self._send_phone,
                 phone_alert_name=phone_alert_name,
                 request_id=request_id,
+            ))
+
+        # ── 并发等待全部通道结果（单通道异常不影响其他通道） ──
+        if tasks:
+            names = list(tasks.keys())
+            results = await asyncio.gather(
+                *tasks.values(),
+                return_exceptions=True,
             )
+            for name, result in zip(names, results):
+                if isinstance(result, Exception):
+                    result = {
+                        "attempted": True,
+                        "success": False,
+                        "error": f"线程异常: {result!r}",
+                    }
+                    self.log(f"通道 {name} 线程异常 | request_id={request_id} "
+                             f"error={result['error']}", level="ERROR")
+                if name == "dingtalk":
+                    dingtalk_result = result
+                elif name == "ios_push":
+                    ios_push_result = result
+                elif name == "phone":
+                    phone_result = result
 
         # ── 发布结果事件 ──
         self.fire_event("notify_service_result", **{
             "request_id": request_id,
             "source": source,
-            "channel": channel,
-            "telegram": telegram_result,
+            "channels": channels,
+            "dingtalk": dingtalk_result,
             "ios_push": ios_push_result,
             "phone": phone_result,
         })
         self.log(f"通知完成 | request_id={request_id} "
-                 f"telegram={telegram_result} ios_push={ios_push_result} "
+                 f"dingtalk={dingtalk_result} ios_push={ios_push_result} "
                  f"phone={phone_result}")
 
     # ══════════════════════════════════════════════════════════
-    #  Telegram 通道
+    #  钉钉通道（自定义机器人 + 加签）
     # ══════════════════════════════════════════════════════════
 
-    def _send_telegram(self, message, title, image_path, force_sound, request_id):
-        """发送 Telegram 通知，支持图片和静默规则。"""
+    def _send_dingtalk(self, message, title, image_path, request_id):
+        """发送钉钉自定义机器人通知。
+
+        有 image_path 时走 markdown 消息内嵌图片 URL；
+        无图时走 text 消息。force_sound 在钉钉通道上不生效（钉钉 webhook 无响铃控制），
+        真正需要响铃仍由 phone 通道负责。
+        """
         result = {"attempted": True, "success": False, "error": None}
 
-        # 判断是否静默
-        disable_notification = False
-        if not force_sound and self._is_silent_time():
-            disable_notification = True
-
-        # 组合标题和正文
-        full_message = f"*{title}*\n{message}" if title else message
+        if not self.dingtalk_enabled:
+            result["error"] = "dingtalk webhook/secret 未配置"
+            self.log(f"钉钉未配置，跳过 | request_id={request_id}", level="WARNING")
+            return result
 
         try:
+            signed_url = self._build_dingtalk_signed_url()
+
             if image_path:
-                # 有图片时先尝试发送图片消息
-                try:
-                    service_data = {
-                        "entity_id": self.telegram_entity_id,
-                        "file": image_path,
-                        "caption": full_message,
-                        "disable_notification": disable_notification,
-                    }
-                    if self.telegram_parse_mode:
-                        service_data["parse_mode"] = self.telegram_parse_mode
-                    self.call_service("telegram_bot/send_photo", **service_data)
-                    result["success"] = True
-                    self.log(f"Telegram 图片消息已发送 | request_id={request_id}")
-                    return result
-                except Exception as img_err:
-                    # 图片发送失败，补发文字说明
-                    self.log(f"Telegram 图片发送失败，尝试补发文字 | "
-                             f"request_id={request_id} error={img_err}",
-                             level="WARNING")
-                    fallback_msg = f"{full_message}\n\n(图片未能成功送达: {image_path})"
-                    service_data = {
-                        "entity_id": self.telegram_entity_id,
-                        "message": fallback_msg,
-                        "disable_notification": disable_notification,
-                    }
-                    if self.telegram_parse_mode:
-                        service_data["parse_mode"] = self.telegram_parse_mode
-                    self.call_service("telegram_bot/send_message", **service_data)
-                    result["success"] = True
-                    result["error"] = f"图片发送失败已补发文字: {img_err}"
-                    self.log(f"Telegram 文字兜底已发送 | request_id={request_id}")
-                    return result
-            else:
-                # 纯文字消息
-                service_data = {
-                    "entity_id": self.telegram_entity_id,
-                    "message": full_message,
-                    "disable_notification": disable_notification,
+                # 将 /config/www/xxx.jpg 转为 {dingtalk_image_base_url}xxx.jpg
+                image_url = image_path.replace(
+                    "/config/www/", self.dingtalk_image_base_url
+                )
+                md_title = title or "HA 告警"
+                md_text = f"# {md_title}\n\n{message}\n\n![snapshot]({image_url})"
+                payload = {
+                    "msgtype": "markdown",
+                    "markdown": {
+                        "title": md_title,
+                        "text": md_text,
+                    },
                 }
-                if self.telegram_parse_mode:
-                    service_data["parse_mode"] = self.telegram_parse_mode
-                self.call_service("telegram_bot/send_message", **service_data)
+            else:
+                text_content = f"【{title}】\n{message}" if title else message
+                payload = {
+                    "msgtype": "text",
+                    "text": {"content": text_content},
+                }
+
+            req = urllib.request.Request(
+                signed_url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                response_text = response.read().decode("utf-8")
+                response_data = json.loads(response_text)
+
+            if response_data.get("errcode") == 0:
                 result["success"] = True
-                self.log(f"Telegram 文字消息已发送 | request_id={request_id}")
-                return result
+                self.log(f"钉钉消息已发送 | request_id={request_id} "
+                         f"has_image={bool(image_path)}")
+            else:
+                result["error"] = (f"errcode={response_data.get('errcode')} "
+                                   f"errmsg={response_data.get('errmsg')}")
+                self.log(f"钉钉发送失败 | request_id={request_id} "
+                         f"{result['error']}", level="ERROR")
 
         except Exception as e:
             result["error"] = str(e)
-            self.log(f"Telegram 发送失败 | request_id={request_id} error={e}",
+            self.log(f"钉钉发送异常 | request_id={request_id} error={e}",
                      level="ERROR")
-            return result
+
+        return result
+
+    def _build_dingtalk_signed_url(self):
+        """按钉钉自定义机器人签名规范构造带 timestamp+sign 的 URL。"""
+        timestamp = str(round(time.time() * 1000))
+        string_to_sign = f"{timestamp}\n{self.dingtalk_secret}"
+        hmac_code = hmac.new(
+            self.dingtalk_secret.encode("utf-8"),
+            string_to_sign.encode("utf-8"),
+            digestmod=hashlib.sha256,
+        ).digest()
+        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+        separator = "&" if "?" in self.dingtalk_webhook else "?"
+        return f"{self.dingtalk_webhook}{separator}timestamp={timestamp}&sign={sign}"
 
     # ══════════════════════════════════════════════════════════
     #  iOS Companion App 推送通道
@@ -255,7 +342,7 @@ class NotifyService(hass.Hass):
             if push_data:
                 service_data["data"] = push_data
 
-            # 调用 notify 服务（如 notify.mobile_app_iphone_dna）
+            # 调用 notify 服务（如 notify.mobile_app_dna_iphone15p）
             self.call_service(
                 self.ios_push_service.replace(".", "/", 1),
                 **service_data

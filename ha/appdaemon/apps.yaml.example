@@ -1,19 +1,24 @@
 # ── 统一通知服务 ──
 # 部署时将本段内容合并到 /addon_configs/a0d7b954_appdaemon/apps/apps.yaml
-# 敏感信息（chat_id、AccessKey 等）只在实际部署文件中填写，不要提交到仓库
+# 敏感信息（webhook、secret、AccessKey、手机号等）只在实际部署文件中填写，不要提交到仓库
 
 notify_service:
   module: notify_service
   class: NotifyService
 
-  # Telegram 配置（HA 2026 版 telegram_bot 服务需要 entity_id）
-  telegram_entity_id: "<Telegram notify entity_id, 如 notify.homeassistant_yang_weiyi_6763263062>"
-  telegram_parse_mode: "markdown"
+  # 钉钉自定义机器人（加签模式）
+  # webhook 形如 https://oapi.dingtalk.com/robot/send?access_token=xxx
+  # secret 形如 SECxxxxxx，用于 HMAC-SHA256 加签
+  dingtalk_webhook: "<钉钉机器人 webhook URL>"
+  dingtalk_secret: "<钉钉机器人加签 secret>"
+  # 图片基础 URL：markdown 图片链接的前缀，默认用 HA 内网地址
+  # 如有公网访问能力（Nabu Casa / 外网穿透），可改为公网 URL
+  dingtalk_image_base_url: "http://192.168.77.253:8123/local/"
 
   # iOS Companion App 推送（留空则不启用）
   ios_push_service: "<notify 服务名，如 notify.mobile_app_dna_iphone15p>"
 
-  # 静默时段（跨天，在此时段内且 force_sound=false 时 Telegram 静默送达）
+  # 静默时段（跨天，在此时段内且 force_sound=false 时 iOS 推送静默送达）
   silent_start: "23:00"
   silent_end: "07:00"
 

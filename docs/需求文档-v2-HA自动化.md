@@ -75,14 +75,15 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
    - 为降低”单次抓拍抓空”的概率，触发后连续抓拍多次，至少成功 1 次即发送图片通知
    - 默认参数：**5 次抓拍，每次间隔 5 秒**（共 20 秒），均为可配置项
 
-2. **发送 Telegram 通知**
-   - 一期业务层不再直接调用 `telegram_bot.send_message/send_photo`
+2. **发送多通道告警通知**
+   - 一期业务层不再直接调用任何具体通知服务
    - 统一通过 AppDaemon `NotifyService` 发出 `notify_service_request`
-   - 当前已落地通道仍为 Telegram，接收人配置通过 AppDaemon `apps.yaml` 注入
-   - 内容：文字描述 + 电梯厅快照图片
+   - 当前落地通道：**钉钉自定义机器人**（加签）+ **iOS Companion App 推送** + **阿里云 VMS 电话**
+   - 接收人 / webhook / 凭据通过 AppDaemon `apps.yaml` 注入
+   - 内容：文字描述 + 电梯厅快照图片（钉钉 markdown 内嵌，iOS 推送作为 attachment）
    - 文字示例：`⚠️ 夜间门内开锁告警\n时间：{{ now().strftime('%H:%M:%S') }}\n门锁状态：门内按钮开锁\n门状态确认：{{ 已确认开门 / 未确认门状态 }}`
-   - **强制响铃** 通过统一通知服务的 `force_sound: true` 表达，不受 23:00~07:00 静默规则约束
-   - 【Codex 修改】若全部抓拍尝试均失败，也必须先发纯文字告警，文案明确写出“快照抓取失败”，不能因为图片失败而吞掉告警
+   - **强制响铃** 通过 `force_sound: true` 表达（iOS critical alert + 电话），钉钉通道无响铃控制
+   - 【Codex 修改】若全部抓拍尝试均失败，也必须先发纯文字告警，文案明确写出"快照抓取失败"，不能因为图片失败而吞掉告警
 
 ### 4.4 冷却机制
 
@@ -103,8 +104,8 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
 - HA `script` 负责等待门状态、连续抓拍、整理通知参数
 - 【Codex 修改】一期通知层统一采用 AppDaemon `NotifyService`
 - HA 业务自动化与脚本通过 `event: notify_service_request` 调用通知服务
-- `NotifyService` 统一处理 Telegram、电话、静默时间、强制响铃和通道容错
-- 当前一期联调与验收以 Telegram 通道为主；电话通道已纳入统一接口，但是否正式启用以联调结果为准
+- `NotifyService` 统一处理钉钉、iOS 推送、电话、静默时间、强制响铃和通道容错
+- 当前一期联调与验收以钉钉 + iOS 推送为主通道；电话通道纳入主告警响铃链路，启用与否以联调结果为准
 
 ---
 
@@ -164,8 +165,9 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
 
 | 通道 | 方式 | 状态 |
 |------|------|------|
-| Telegram | AppDaemon `NotifyService` -> Telegram 通道 | 已验证底层链路 |
-| 电话 | AppDaemon `NotifyService` -> 阿里云 VMS | 纳入一期架构，启用待联调 |
+| 钉钉 | AppDaemon `NotifyService` -> 钉钉自定义机器人（加签） | 2026-04-11 切换为主通道 |
+| iOS 推送 | AppDaemon `NotifyService` -> HA Companion iOS App | 基础推送已验证 |
+| 电话 | AppDaemon `NotifyService` -> 阿里云 VMS | 主告警响铃链路，已验证 |
 
 ---
 
@@ -188,13 +190,13 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
 
 ### 一期
 
-1. 告警时段内（23:00~07:30），从室内按钮开锁后，5 秒内收到首条 Telegram 告警；25 秒内（5 次抓拍周期）至少拿到 1 张有效快照或明确收到”快照抓取失败”的文字说明
+1. 告警时段内（23:00~07:30），从室内按钮开锁后，5 秒内收到首条钉钉 / iOS 推送告警并触发电话呼叫；25 秒内（5 次抓拍周期）至少拿到 1 张有效快照或明确收到"快照抓取失败"的文字说明
 2. 告警时段外，从室内开锁 → 不告警
 3. 从室外开锁（指纹/密码/NFC）→ 不告警
 4. 【Codex 修改】默认 5 分钟冷却期内重复开锁 → 不重复告警
 5. 超过默认 5 分钟后再次开锁 → 重新告警
 6. 监护告警通过统一通知服务强制响铃，不受静默规则影响
-7. 【Codex 修改】夜间监护一期业务层统一通过 `notify_service_request` 发起通知，不再在业务 YAML 中散落调用 Telegram 服务
+7. 【Codex 修改】夜间监护一期业务层统一通过 `notify_service_request` 发起通知，不再在业务 YAML 中散落调用任何具体通知服务
 
 ### 二期
 
@@ -207,8 +209,8 @@ event: xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020
 - 一期不区分"谁"开的门，依赖快照人工确认
 - 一期不使用人脸识别，不拉视频流
 - CW500 室外摄像头暂不接入（xiaomi_home 不支持视频流）
-- 一期通知层统一走 `NotifyService`，业务层不再直接绑定 Telegram 服务
-- 当前已验证通道为 Telegram；电话通道与统一通知服务一起设计和实现，但真实启用不作为一期上线前的唯一阻塞项
+- 一期通知层统一走 `NotifyService`，业务层不再直接绑定任何具体通知服务
+- 当前通道：钉钉（主消息通道）、iOS 推送（辅助消息通道）、电话（响铃兜底）；Telegram 已于 2026-04-11 移除
 - 【Codex 修改】二期目前仅为预留增强项，不作为当前一期交付和验收阻塞项
 - 【Codex 修改】若后续接入 AI，其结论属于辅助判断，不应脱离门锁、门状态或路径上下文单独下“已外出”结论
 - 【Codex 修改】当前主目标只覆盖“独自外出”风险；若明确存在陪同人员，则记录观察日志，但不触发主告警

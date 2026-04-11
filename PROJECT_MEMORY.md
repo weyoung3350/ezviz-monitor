@@ -17,7 +17,7 @@
   - 锁动作 = `2`
 - 告警时段默认：`23:00 ~ 07:30`
 - 电梯厅摄像头默认实体：`camera.dian_ti_ting_mainstream`
-- 当前已验证通道是 Telegram；电话通道纳入统一通知服务架构，真实启用待联调
+- 当前主通道：钉钉自定义机器人（加签） + iOS Companion App 推送 + 阿里云 VMS 电话；Telegram 已于 2026-04-11 移除
 - 同一门锁告警规则默认 5 分钟冷却
 - 告警触发后默认连续抓拍 5 次，每次间隔 5 秒
 - 二期 AI 增强暂只保留方向，不冻结具体实现
@@ -45,27 +45,28 @@
   - 连续抓拍
   - 发出 `notify_service_request`
 - `appdaemon.NotifyService`
-  - 统一处理 Telegram / 电话通道
+  - 统一处理 钉钉 / iOS 推送 / 电话 三通道
+  - 支持 `channel` 字段为字符串或数组（精细选择通道组合）
   - 统一处理静默规则、强制响铃和通道容错
 
 ## 当前实现状态
 
 - 文档主线已从旧 Python 方案切换到 HA 一期方案
-- 通知层主线已从“YAML 直接发 Telegram”切到 `NotifyService`
+- 通知层主线是 `NotifyService`，已完成钉钉替换 Telegram 改造（2026-04-11）
 - docs 已开始收敛，旧交付流程文档准备清理
 - HA 一期实现草案与通知服务设计已输出
-- 当前 HA 上已有 YAML 自动化版本，后续需切换接入统一通知服务
+- 当前 HA 上已部署 YAML 自动化 + NotifyService，钉钉/iOS/电话三通道就绪
 
 ## 待验证事项
 
-- AppDaemon `NotifyService` 的 Telegram 接入最终走 `telegram_bot` 还是 `notify` 封装
-- 快照文件写入路径和 Telegram 图片访问路径如何配置最稳
+- 钉钉机器人加签链路的端到端验证（含图片 markdown 消息）
+- 快照文件内网 URL 能否被钉钉服务器拉取成功，失败后是否需要改外网 URL 或图床方案
 - 夜间门内开锁事件的真实属性在 HA 中是否稳定一致
-- 电话通道在 AppDaemon 中的真实可用性和依赖安装状态
+- iOS Companion App critical alert（`force_sound=true`）是否能穿透勿扰模式
 
 ## 当前已知风险
 
-- 摄像头抓拍路径与 Telegram 发送链路如果不通，告警体验会退化为纯文字
+- 摄像头抓拍路径与钉钉图片链路如果不通，告警体验会退化为纯文字（iOS 推送仍有本地图片附件）
 - 统一通知服务切入后，现有 HA 自动化和脚本需要同步改造，否则文档与实现会分叉
 - 二期 AI 是否真的需要引入，仍要以一期实际运行结果决定
 

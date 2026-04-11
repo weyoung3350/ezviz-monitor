@@ -48,11 +48,12 @@
   `sensor.xiaomi_cn_1150511669_s20pro_door_state_p_3_1021`
 - 摄像头实体：
   `camera.dian_ti_ting_mainstream`
-- 当前 Telegram 底层链路：
-  `telegram_bot.send_message`
-  `telegram_bot.send_photo`
+- 当前主消息通道：钉钉自定义机器人（加签），由 NotifyService 内置 HMAC-SHA256 签名
+- 当前辅助消息通道：HA Companion iOS App 推送（`notify.mobile_app_dna_iphone15p`）
+- 当前响铃通道：阿里云 VMS `single_call_by_tts`
 - 当前业务主线要求：
-  业务 YAML 不再直接调用 Telegram，而是统一发 `notify_service_request`
+  业务 YAML 不再直接调用任何具体通知服务，统一发 `notify_service_request`
+  `channel` 字段支持字符串或数组（`"dingtalk"` / `["dingtalk","ios_push"]` / `"all"`）
 - 夜间门内开锁告警冷却：
   5 分钟
 - 夜间时段：
@@ -73,14 +74,14 @@
 1. 实现 `NotifyService`
 - 监听 `notify_service_request`
 - 支持 `channel / force_sound / image_path`
-- Telegram 与电话通道独立容错
+- 钉钉、iOS 推送、电话三通道独立容错
 - 静默规则内置
 - 配置通过 `apps.yaml` 注入
 
 2. 改造现有夜间监护一期
 - `ha/packages/night_guard_automations.yaml`
 - `ha/packages/night_guard_scripts.yaml`
-- 让业务层不再直接发 Telegram
+- 让业务层不再直接绑定任何具体通知服务
 - 改为构造并发出 `notify_service_request`
 
 3. 保留当前一期业务约束
