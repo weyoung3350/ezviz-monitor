@@ -13,9 +13,10 @@ channel 字段支持：
   - "all" 等价于 ["dingtalk", "ios_push", "phone"]
 
 异步调度：
-  - on_notify_request 是 async 回调，三个通道通过 asyncio.to_thread + gather 并发执行
+  - on_notify_request 是 async 回调，三个通道通过 AppDaemon 原生 self.run_in_executor
+    + asyncio.gather 并发执行
   - 各 _send_* 方法保持 sync 实现（内部调用第三方 SDK / HTTP / self.call_service），
-    由 asyncio.to_thread 将其派发到线程池执行，避免阻塞 AppDaemon 事件循环。
+    由 AppDaemon 自己的线程池派发，生命周期随 app reload/terminate 一起清理
 """
 
 import asyncio
@@ -27,8 +28,16 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from functools import partial
 
 import appdaemon.plugins.hass.hassapi as hass
+
+
+# ── 合法通道白名单 ──
+VALID_CHANNELS = {"dingtalk", "ios_push", "phone", "all"}
+
+# ── 快照路径前缀（钉钉图片 URL 仅接受此前缀下的文件）──
+SNAPSHOT_PATH_PREFIX = "/config/www/"
 
 
 class NotifyService(hass.Hass):
@@ -95,16 +104,46 @@ class NotifyService(hass.Hass):
             self.log(f"VMS 客户端初始化失败: {e}", level="WARNING")
 
     # ══════════════════════════════════════════════════════════
-    #  通道解析
+    #  通道解析与校验
     # ══════════════════════════════════════════════════════════
 
     def _resolve_channels(self, channel_raw):
-        """将 channel 字段规范化为小写字符串列表。"""
+        """将 channel 字段规范化为合法通道名列表。
+
+        返回 (channels, errors)：
+          - channels: 规范化后的通道名列表，只包含 VALID_CHANNELS 中的值
+          - errors: 解析过程中的警告消息列表，供调用方记录 ERROR 日志
+
+        非字符串 / 非列表 → 视为非法，返回空列表 + 错误信息
+        空列表 / 全部未知值 → 返回空列表 + 错误信息
+        """
+        errors = []
+
         if isinstance(channel_raw, str):
-            return [channel_raw.strip().lower()]
-        if isinstance(channel_raw, (list, tuple)):
-            return [str(c).strip().lower() for c in channel_raw]
-        return ["dingtalk"]
+            raw_list = [channel_raw.strip().lower()]
+        elif isinstance(channel_raw, (list, tuple)):
+            raw_list = [str(c).strip().lower() for c in channel_raw if str(c).strip()]
+        else:
+            return [], [f"channel 字段类型非法: {type(channel_raw).__name__}"]
+
+        if not raw_list:
+            return [], ["channel 为空，无法分发"]
+
+        valid = []
+        unknown = []
+        for c in raw_list:
+            if c in VALID_CHANNELS:
+                if c not in valid:  # 去重
+                    valid.append(c)
+            else:
+                unknown.append(c)
+
+        if unknown:
+            errors.append(f"未知通道被忽略: {unknown}")
+        if not valid:
+            errors.append("解析后没有有效通道")
+
+        return valid, errors
 
     def _channel_active(self, channels, name):
         return "all" in channels or name in channels
@@ -117,10 +156,11 @@ class NotifyService(hass.Hass):
         """处理 notify_service_request 事件，三通道并发分发。
 
         同步的 _send_dingtalk / _send_ios_push / _send_phone 通过
-        asyncio.to_thread 派发到线程池，由 asyncio.gather 并发等待，
-        总耗时 ≈ max(各通道)，不会阻塞 AppDaemon 事件循环。
+        self.run_in_executor 派发到 AppDaemon 内部线程池，由 asyncio.gather
+        并发等待，总耗时 ≈ max(各通道)，不会阻塞 AppDaemon 事件循环。
+        使用 AppDaemon 原生 executor 而非 asyncio.to_thread，确保任务归属
+        随 app reload/terminate 被正确清理。
         """
-        channels = self._resolve_channels(data.get("channel", "dingtalk"))
         message = data.get("message", "")
         title = data.get("title", "")
         image_path = data.get("image_path", "")
@@ -128,6 +168,13 @@ class NotifyService(hass.Hass):
         force_sound = data.get("force_sound", False)
         request_id = data.get("request_id", "")
         source = data.get("source", "")
+
+        # ── 通道解析与校验 ──
+        channels, parse_errors = self._resolve_channels(
+            data.get("channel", "dingtalk")
+        )
+        for err in parse_errors:
+            self.log(f"通道解析错误 | request_id={request_id} {err}", level="ERROR")
 
         self.log(f"收到通知请求 | request_id={request_id} source={source} "
                  f"channels={channels} force_sound={force_sound}")
@@ -137,8 +184,26 @@ class NotifyService(hass.Hass):
         ios_push_result = {"attempted": False, "success": False, "error": None}
         phone_result = {"attempted": False, "success": False, "error": None}
 
-        # ── 构造并发任务 ──
-        tasks: dict[str, asyncio.Task] = {}
+        # ── 通道解析失败：直接发布失败结果事件 ──
+        if not channels:
+            error_text = "; ".join(parse_errors) or "no valid channels"
+            dingtalk_result["error"] = error_text
+            ios_push_result["error"] = error_text
+            phone_result["error"] = error_text
+            self.fire_event("notify_service_result", **{
+                "request_id": request_id,
+                "source": source,
+                "channels": [],
+                "dingtalk": dingtalk_result,
+                "ios_push": ios_push_result,
+                "phone": phone_result,
+            })
+            self.log(f"通道解析失败，放弃分发 | request_id={request_id} "
+                     f"error={error_text}", level="ERROR")
+            return
+
+        # ── 构造并发任务（使用 AppDaemon 原生 run_in_executor）──
+        tasks: dict[str, object] = {}
 
         # 钉钉通道
         if self._channel_active(channels, "dingtalk"):
@@ -151,7 +216,7 @@ class NotifyService(hass.Hass):
                 self.log(f"钉钉 跳过: message 为空 | request_id={request_id}",
                          level="ERROR")
             else:
-                tasks["dingtalk"] = asyncio.create_task(asyncio.to_thread(
+                tasks["dingtalk"] = self.run_in_executor(partial(
                     self._send_dingtalk,
                     message=message,
                     title=title,
@@ -168,7 +233,7 @@ class NotifyService(hass.Hass):
                     "error": "message 为空",
                 }
             else:
-                tasks["ios_push"] = asyncio.create_task(asyncio.to_thread(
+                tasks["ios_push"] = self.run_in_executor(partial(
                     self._send_ios_push,
                     message=message,
                     title=title,
@@ -181,7 +246,7 @@ class NotifyService(hass.Hass):
         if self._channel_active(channels, "phone"):
             if not phone_alert_name:
                 phone_alert_name = title or message[:20] or "HA通知"
-            tasks["phone"] = asyncio.create_task(asyncio.to_thread(
+            tasks["phone"] = self.run_in_executor(partial(
                 self._send_phone,
                 phone_alert_name=phone_alert_name,
                 request_id=request_id,
@@ -233,6 +298,9 @@ class NotifyService(hass.Hass):
         有 image_path 时走 markdown 消息内嵌图片 URL；
         无图时走 text 消息。force_sound 在钉钉通道上不生效（钉钉 webhook 无响铃控制），
         真正需要响铃仍由 phone 通道负责。
+
+        image_path 必须以 SNAPSHOT_PATH_PREFIX（"/config/www/"）开头，否则降级为
+        纯文字消息并记录 WARNING，避免拼出无效 URL 却记为成功。
         """
         result = {"attempted": True, "success": False, "error": None}
 
@@ -241,13 +309,25 @@ class NotifyService(hass.Hass):
             self.log(f"钉钉未配置，跳过 | request_id={request_id}", level="WARNING")
             return result
 
+        # 图片路径前缀校验 —— 不合法则降级为纯文字
+        use_image = False
+        if image_path:
+            if image_path.startswith(SNAPSHOT_PATH_PREFIX):
+                use_image = True
+            else:
+                self.log(
+                    f"钉钉图片路径不以 {SNAPSHOT_PATH_PREFIX} 开头，降级为纯文字 | "
+                    f"image_path={image_path} request_id={request_id}",
+                    level="WARNING",
+                )
+
         try:
             signed_url = self._build_dingtalk_signed_url()
 
-            if image_path:
+            if use_image:
                 # 将 /config/www/xxx.jpg 转为 {dingtalk_image_base_url}xxx.jpg
                 image_url = image_path.replace(
-                    "/config/www/", self.dingtalk_image_base_url
+                    SNAPSHOT_PATH_PREFIX, self.dingtalk_image_base_url
                 )
                 md_title = title or "HA 告警"
                 md_text = f"# {md_title}\n\n{message}\n\n![snapshot]({image_url})"
@@ -278,7 +358,7 @@ class NotifyService(hass.Hass):
             if response_data.get("errcode") == 0:
                 result["success"] = True
                 self.log(f"钉钉消息已发送 | request_id={request_id} "
-                         f"has_image={bool(image_path)}")
+                         f"has_image={use_image}")
             else:
                 result["error"] = (f"errcode={response_data.get('errcode')} "
                                    f"errmsg={response_data.get('errmsg')}")

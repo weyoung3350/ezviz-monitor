@@ -11,8 +11,10 @@ notify_service:
   # secret 形如 SECxxxxxx，用于 HMAC-SHA256 加签
   dingtalk_webhook: "<钉钉机器人 webhook URL>"
   dingtalk_secret: "<钉钉机器人加签 secret>"
-  # 图片基础 URL：markdown 图片链接的前缀，默认用 HA 内网地址
-  # 如有公网访问能力（Nabu Casa / 外网穿透），可改为公网 URL
+  # 图片基础 URL：markdown 图片链接的前缀。
+  # ⚠️ 注意：钉钉服务器位于公网，通常无法拉取内网 URL（如 192.168.x.x）。
+  # 使用内网地址时钉钉 markdown 文字可以送达，但图片在钉钉客户端会显示"加载失败"。
+  # 如需图片真实展示，请改用 Nabu Casa / 外网穿透 / 图床的公网可达 URL。
   dingtalk_image_base_url: "http://192.168.77.253:8123/local/"
 
   # iOS Companion App 推送（留空则不启用）

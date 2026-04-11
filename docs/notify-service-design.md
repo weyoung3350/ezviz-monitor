@@ -129,6 +129,9 @@ event_data:
 - 数组 `["dingtalk", "ios_push"]`：并发发钉钉和 iOS 推送，不打电话
 - `"all"`：等价于同时发钉钉 + iOS 推送 + 电话
 - 未列出的通道一律视为关闭，不会被触发
+- 合法值集合：`{"dingtalk", "ios_push", "phone", "all"}`
+- 未知通道名（例如 `"ding"`、`"sms"`）会被过滤并在日志里记录 ERROR
+- 空数组 `[]` / 全部未知值 / 非字符串非数组的输入 → 直接放弃分发，结果事件中三通道全部标记 `error=解析错误`
 
 ### 5.4 默认回退规则
 
@@ -191,12 +194,15 @@ event_data:
 
 1. `image_path` 为空
    - 走 `text` 消息类型，正文 `【{title}】\n{message}`（无 title 时只有 message）
-2. `image_path` 不为空
+2. `image_path` 以 `/config/www/` 开头
    - 走 `markdown` 消息类型
    - 标题使用 `title`（缺省回退 "HA 告警"）
    - 正文 `# {title}\n\n{message}\n\n![snapshot]({image_url})`
    - `image_url` 由 `image_path.replace("/config/www/", dingtalk_image_base_url)` 得到
    - `dingtalk_image_base_url` 默认 `http://192.168.77.253:8123/local/`（内网）
+3. `image_path` 不以 `/config/www/` 开头
+   - 记录 WARNING 日志
+   - 降级为纯文字消息（同 1），避免拼出无效 URL 却记成功
 
 ### 7.3 内网图片的风险
 
@@ -286,11 +292,17 @@ event_data:
 所有第三方调用（HTTP、SDK、`self.call_service`）必须不阻塞 AppDaemon 事件循环：
 
 - `on_notify_request` 固定为 `async def`，由 AppDaemon 在事件循环上 `await` 执行
-- 每个激活的通道用 `asyncio.to_thread(self._send_*, ...)` 派发到线程池
-- 多通道用 `asyncio.create_task` + `asyncio.gather(..., return_exceptions=True)` 并发等待
+- 每个激活的通道用 **AppDaemon 原生** `self.run_in_executor(partial(self._send_*, ...))` 派发到 AppDaemon 内部线程池
+- 多通道用 `asyncio.gather(*tasks, return_exceptions=True)` 并发等待
 - 各 `_send_dingtalk` / `_send_ios_push` / `_send_phone` 保持 sync 实现（内部仍可直接用 urllib / self.call_service / VMS SDK），借助线程池隔离阻塞行为
 - `asyncio.gather(return_exceptions=True)` 保证单通道未捕获异常不会取消其他通道
 - 线程异常统一包装为 `{"attempted": True, "success": False, "error": "线程异常: ..."}`，结果事件仍然能发布
+
+**为什么用 AppDaemon 原生 `run_in_executor` 而不是 `asyncio.to_thread`**：
+
+- `asyncio.to_thread` 走的是 Python 默认线程池，任务生命周期与 AppDaemon app reload/terminate 解耦
+- `self.run_in_executor` 走 AppDaemon 管理的内部线程池，reload 时会被正确清理，符合 AppDaemon 的线程模型
+- 两者在调用方式上几乎等价（都返回 awaitable），但后者在框架生命周期里更干净
 
 效果：
 
