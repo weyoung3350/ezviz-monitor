@@ -332,6 +332,66 @@ async def test_update_cooldown_calls_service_and_writes_process_last(mock_hass_a
     assert mock_hass_app._in_process_last_alert == now
 
 
+async def test_update_cooldown_helper_failure_does_not_raise(mock_hass_app):
+    """Codex R5 blocking 修复验证: call_service 抛异常时 _update_cooldown 必须吞掉异常，
+    否则会中断上层 on_door_unlock_trigger 流程导致主告警不发（但冷却已生效，构成漏报）。
+
+    预期行为：
+    - 不向上抛异常
+    - 进程内 _in_process_last_alert 仍然被设置（作为兜底冷却）
+    - log WARNING 记录 helper 写入失败
+    """
+    now = datetime(2026, 4, 11, 1, 37, 33)
+    mock_hass_app._in_process_last_alert = None
+    mock_hass_app.call_service = AsyncMock(
+        side_effect=RuntimeError("HA service unavailable")
+    )
+
+    # 必须不抛异常
+    await NightGuardOrchestrator._update_cooldown(mock_hass_app, now)
+
+    # 进程内兜底仍被设置
+    assert mock_hass_app._in_process_last_alert == now
+    # WARNING 日志被记录（只断言调用过 log，具体参数 level 由调用方传）
+    assert mock_hass_app.log.called
+
+
+async def test_on_trigger_continues_alert_when_cooldown_helper_fails(trigger_ready_app):
+    """Codex R5 blocking 修复的集成验证: 即使 HA helper 写入失败，
+    主告警和后续流程仍应继续执行（不漏报）。"""
+    trigger_ready_app._guard_enabled = AsyncMock(return_value=True)
+    trigger_ready_app._check_window = AsyncMock(return_value=True)
+    trigger_ready_app._check_cooldown = AsyncMock(return_value=True)
+    # _update_cooldown 走真实逻辑，其内部 call_service 被 mock 成抛异常
+    trigger_ready_app._update_cooldown = (
+        NightGuardOrchestrator._update_cooldown.__get__(trigger_ready_app)
+    )
+    trigger_ready_app.call_service = AsyncMock(
+        side_effect=RuntimeError("HA service unavailable")
+    )
+    trigger_ready_app._fire_first_alert = AsyncMock()
+    trigger_ready_app._run_snapshot_loop = AsyncMock(return_value={
+        "last_successful_snapshot": "",
+        "door_ever_opened": False,
+        "door_opened_state": "",
+        "last_door_state": "已上锁",
+    })
+    trigger_ready_app._fire_snapshot_notification = AsyncMock(return_value=False)
+    trigger_ready_app._fire_detail_fallback = AsyncMock()
+
+    # 不应抛异常
+    await NightGuardOrchestrator.on_door_unlock_trigger(
+        trigger_ready_app, "event", {"source": "test"}, {}
+    )
+
+    # 主告警必须被发出（不漏报）
+    trigger_ready_app._fire_first_alert.assert_called_once()
+    trigger_ready_app._run_snapshot_loop.assert_called_once()
+    trigger_ready_app._fire_detail_fallback.assert_called_once()
+    # 进程内兜底冷却仍被设置（下次进入会拦截）
+    assert trigger_ready_app._in_process_last_alert is not None
+
+
 async def test_check_cooldown_helper_unavailable_no_in_process(mock_hass_app):
     """helper 不可用 + 进程内兜底为空 → 放行。"""
     mock_hass_app.get_state = AsyncMock(return_value="unavailable")
@@ -466,6 +526,39 @@ async def test_snapshot_loop_snapshot_service_raises(mock_hass_app, monkeypatch)
     # 调用 3 次都异常，但摄像头 state 正常，所以仍记录最后一张候选路径
     assert result["last_successful_snapshot"].endswith("_3.jpg")
     assert mock_hass_app.call_service.call_count == 3
+
+
+async def test_snapshot_loop_get_state_raises(mock_hass_app, monkeypatch):
+    """Codex R5 改进: get_state 抛异常不应中断循环，循环必须跑完所有轮次。
+
+    边界条件：HA 偶发 RPC 故障导致 get_state 抛 ConnectionError 等异常，
+    旧实现会让整条循环崩溃，后续快照通知 + 详情兜底全部丢失。新实现要把
+    get_state 也用 try/except 包起来，异常时记 WARNING 但继续循环。
+    """
+    async def fake_call_service(service, **kwargs):
+        return None  # snapshot 成功
+
+    async def fake_get_state(entity):
+        raise ConnectionError("HA RPC unavailable")
+
+    mock_hass_app.call_service = AsyncMock(side_effect=fake_call_service)
+    mock_hass_app.get_state = AsyncMock(side_effect=fake_get_state)
+
+    import night_guard_orchestrator as _ngo
+    monkeypatch.setattr(_ngo.asyncio, "sleep", AsyncMock())
+
+    # 不应抛异常
+    result = await NightGuardOrchestrator._run_snapshot_loop(
+        mock_hass_app, "20260411_013733"
+    )
+
+    # snapshot call 全部跑完
+    assert mock_hass_app.call_service.call_count == 3
+    # 因 get_state 异常，无法判断摄像头可用性，last_successful_snapshot 保持空
+    assert result["last_successful_snapshot"] == ""
+    # 门状态读取也失败，door_ever_opened 维持 False
+    assert result["door_ever_opened"] is False
+    assert result["last_door_state"] == ""
 
 
 # ══════════════════════════════════════════════════════════

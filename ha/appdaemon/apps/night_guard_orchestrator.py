@@ -272,13 +272,26 @@ class NightGuardOrchestrator(hass.Hass):
         return should_alert(last, self.cooldown, now)
 
     async def _update_cooldown(self, now) -> None:
-        """同时更新 HA helper 和进程内兜底变量。"""
+        """同时更新 HA helper 和进程内兜底变量。
+
+        helper 写入失败时记录 WARNING 但**不向上抛异常**。原因：
+        若异常上抛会中断 on_door_unlock_trigger 流程，主告警就发不出去；
+        与此同时进程内冷却戳已经写入，下次事件会被拦截 —— 这构成"未告警 +
+        已冷却"的真实漏报。捕获异常后仍然让上层继续发主告警，进程内兜底
+        冷却也保持有效。
+        """
         self._in_process_last_alert = now
-        await self.call_service(
-            "input_datetime/set_datetime",
-            entity_id=self.helper_last_alert,
-            datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
-        )
+        try:
+            await self.call_service(
+                "input_datetime/set_datetime",
+                entity_id=self.helper_last_alert,
+                datetime=now.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        except Exception as e:
+            self.log(
+                f"{self.log_prefix} helper 写入失败，仍保留进程内兜底冷却: {e}",
+                level="WARNING",
+            )
 
     async def _fire_first_alert(self, timestamp, time_display) -> None:
         """发首条主告警：channel=all，force_sound=true，三通道并发（含电话响铃）。"""
@@ -333,13 +346,27 @@ class NightGuardOrchestrator(hass.Hass):
                 )
 
             # 摄像头可用时记录候选路径（HA 不能精确判断 snapshot 是否落盘，
-            # 只能以实体状态作为粗略信号）
-            cam_state = await self.get_state(self.camera_entity)
+            # 只能以实体状态作为粗略信号）。get_state 异常不应中断循环。
+            try:
+                cam_state = await self.get_state(self.camera_entity)
+            except Exception as e:
+                self.log(
+                    f"{self.log_prefix} 抓拍 {i} 读 camera 状态异常: {e}",
+                    level="WARNING",
+                )
+                cam_state = None
             if cam_state not in ("unavailable", "unknown", None):
                 last_successful = path
 
-            # 门状态观察
-            door_state = await self.get_state(self.door_state_entity)
+            # 门状态观察。get_state 异常同样不应中断循环。
+            try:
+                door_state = await self.get_state(self.door_state_entity)
+            except Exception as e:
+                self.log(
+                    f"{self.log_prefix} 抓拍 {i} 读 door 状态异常: {e}",
+                    level="WARNING",
+                )
+                door_state = None
             if door_state:
                 last_door_state = door_state
             if (

@@ -829,6 +829,51 @@ input_datetime.night_guard_end: 07:30:00
 |---|---|
 | 代码落地后做最终评审 | 代码已落地，`night_guard_orchestrator.py` 432 行 + 713 行测试，全部通过 + 端到端真实告警跑通，可送终审 |
 
+### 12.8 R5 — Codex 代码评审（2026-04-11，commit `3db33d3` 后续）
+
+R4 是 plan 终审，R5 是对实际落地代码的逐文件评审。Codex 发现 1 个 blocking + 1 个中等 non-blocking。
+
+**Blocking（已修复）**：
+- **`night_guard_orchestrator.py:177-183` `_update_cooldown` 漏报风险**：原实现先写 `self._in_process_last_alert = now` 再 `await self.call_service(...)`。如果 call_service 抛异常（HA 服务不可达 / 权限错误等），异常会上抛中断 `on_door_unlock_trigger` 整条流程，导致：
+  1. `_fire_first_alert` 不被执行 → **主告警未发**
+  2. 进程内冷却戳已写 → 后续 5 分钟内真实事件被拦截
+  3. 净结果：**真实漏报**
+  
+  **修复**：在 `_update_cooldown` 内部用 `try/except` 包住 `call_service`，捕获异常后只 log WARNING，不向上抛。这样即使 helper 写失败，主告警仍然会发出，进程内兜底冷却仍然保持有效。
+  
+  **新增测试**：
+  - `test_update_cooldown_helper_failure_does_not_raise`：单元测试，验证 `call_service` 抛异常时 `_update_cooldown` 不抛 + 进程内戳仍被设置 + log 被调用
+  - `test_on_trigger_continues_alert_when_cooldown_helper_fails`：集成测试，使用 `Method.__get__` 绑定真实 `_update_cooldown`，让 `call_service` 抛异常，验证 `_fire_first_alert` 仍然被调用
+
+**Non-blocking（已修复）**：
+- **`night_guard_orchestrator.py:337-342` `_run_snapshot_loop` 的 `get_state` 异常未捕获**：原实现里 `try/except` 只包了 `camera/snapshot` 的 `call_service`，但循环里两次 `await self.get_state(...)`（读 camera 和 door state）没包。如果 HA 偶发 RPC 故障（ConnectionError 等），整条循环会崩溃，后续快照通知 + 详情兜底全部丢失。
+  
+  **修复**：把两次 `get_state` 也包进 `try/except`，异常时 log WARNING + 设为 None，循环继续。
+  
+  **新增测试**：`test_snapshot_loop_get_state_raises`，验证 `get_state` 抛 `ConnectionError` 时循环跑完所有 snapshot_count 轮次，结果字段降级为空字符串而不是抛异常。
+
+**Non-blocking（暂不修复，标为技术债）**：
+- `tests/conftest.py:65` `mock_hass_app` 无 `spec`，typo 不会暴露 —— 影响是回归防护偏弱，但不影响当前正确性
+- `tests/test_night_guard_orchestrator.py:647-713` 并发 race 测试只有正例，没有"无锁应失败"的负例 —— 同上
+- `night_guard_orchestrator.py:157-193` Lock 粒度大（包整个 30s 流程）—— 当前抓拍时长远小于 cooldown，可接受
+
+**iOS Critical Alert 成功归因**（Codex 澄清）：
+- commit `3db33d3` 对 `notify_service.py` **无 diff**，`_send_ios_push` 的 critical payload 在之前就已存在
+- 这次的成功是**编排路径首次稳定打通** —— orchestrator 直接发 `channel="all", force_sound=True` 给 NotifyService，让 critical payload 走完整链路
+- 之前一直没成功，可能是因为之前测试用的 helper 配置 / 时序 / 权限授予顺序的偶然，而不是 payload 缺陷
+
+### 12.9 R5 修复后回归
+
+- **本地单元测试**：**58/58 通过**（55 原有 + 3 新增：`test_update_cooldown_helper_failure_does_not_raise` / `test_on_trigger_continues_alert_when_cooldown_helper_fails` / `test_snapshot_loop_get_state_raises`）
+- **HA 端到端**：scp 上传新版 → AppDaemon hot-reload 自动检测 → `[night_guard] NightGuardOrchestrator 已启动` → 手动 fire `r5-test-1` 事件 → 完整流程跑通（主告警 + 5 张抓拍 + 快照通知 + 详情兜底，三通道全部 success）
+
+### 12.10 R4 → R5 的代码 diff 摘要
+
+- `ha/appdaemon/apps/night_guard_orchestrator.py`：
+  - `_update_cooldown`：包 try/except，helper 写失败不抛
+  - `_run_snapshot_loop`：包两次 `get_state` 的 try/except
+- `tests/test_night_guard_orchestrator.py`：新增 3 个测试
+
 ### 12.7 R4 — Codex 终审（2026-04-11）
 
 **结论**：**终审通过**
