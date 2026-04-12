@@ -24,10 +24,13 @@ import base64
 import hashlib
 import hmac
 import json
+import mimetypes
+import os
 import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from email.utils import formatdate
 from functools import partial
 
 import appdaemon.plugins.hass.hassapi as hass
@@ -51,6 +54,21 @@ class NotifyService(hass.Hass):
             "http://192.168.77.253:8123/local/",
         )
         self.dingtalk_enabled = bool(self.dingtalk_webhook and self.dingtalk_secret)
+
+        # ── 阿里云 OSS 配置（用于钉钉 markdown 图片外网 URL）──
+        self.oss_access_key_id = self.args.get("oss_access_key_id", "")
+        self.oss_access_key_secret = self.args.get("oss_access_key_secret", "")
+        self.oss_endpoint = self.args.get("oss_endpoint", "")
+        self.oss_bucket = self.args.get("oss_bucket", "")
+        self.oss_download_url = self.args.get("oss_download_url", "")
+        self.oss_key_prefix = self.args.get("oss_key_prefix", "night_guard/")
+        self.oss_enabled = bool(
+            self.oss_access_key_id
+            and self.oss_access_key_secret
+            and self.oss_endpoint
+            and self.oss_bucket
+            and self.oss_download_url
+        )
 
         # ── iOS Companion App 推送配置 ──
         self.ios_push_service = self.args.get("ios_push_service", "")
@@ -78,6 +96,7 @@ class NotifyService(hass.Hass):
         self.log("NotifyService 已启动 | "
                  f"静默时段 {self.silent_start}~{self.silent_end} | "
                  f"钉钉 {'已启用' if self.dingtalk_enabled else '已关闭'} | "
+                 f"OSS {'已启用' if self.oss_enabled else '已关闭'} | "
                  f"iOS推送 {'已启用' if self.ios_push_enabled else '已关闭'} | "
                  f"电话通道 {'已启用' if self.phone_enabled else '已关闭'}")
 
@@ -325,10 +344,16 @@ class NotifyService(hass.Hass):
             signed_url = self._build_dingtalk_signed_url()
 
             if use_image:
-                # 将 /config/www/xxx.jpg 转为 {dingtalk_image_base_url}xxx.jpg
-                image_url = image_path.replace(
-                    SNAPSHOT_PATH_PREFIX, self.dingtalk_image_base_url
-                )
+                # 优先走 OSS 外网 URL（钉钉客户端可访问），失败则降级到内网 URL
+                oss_url = None
+                if self.oss_enabled:
+                    oss_url = self._upload_image_to_oss(image_path, request_id)
+                if oss_url:
+                    image_url = oss_url
+                else:
+                    image_url = image_path.replace(
+                        SNAPSHOT_PATH_PREFIX, self.dingtalk_image_base_url
+                    )
                 md_title = title or "HA 告警"
                 md_text = f"# {md_title}\n\n{message}\n\n![snapshot]({image_url})"
                 payload = {
@@ -384,6 +409,105 @@ class NotifyService(hass.Hass):
         sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
         separator = "&" if "?" in self.dingtalk_webhook else "?"
         return f"{self.dingtalk_webhook}{separator}timestamp={timestamp}&sign={sign}"
+
+    # ══════════════════════════════════════════════════════════
+    #  阿里云 OSS 图片上传（stdlib HTTP + v1 签名）
+    # ══════════════════════════════════════════════════════════
+
+    def _upload_image_to_oss(self, local_path, request_id):
+        """将本地图片上传到阿里云 OSS，返回外网可访问的 URL；失败返回 None。
+
+        使用 OSS v1 签名（HMAC-SHA1），通过 stdlib urllib PUT object，
+        避免引入 oss2 SDK 依赖。签名算法参考：
+        https://help.aliyun.com/document_detail/31951.html
+        """
+        if not self.oss_enabled:
+            return None
+
+        # 路径翻译：调用方传入的 image_path 是 HA Core 视角的 /config/www/xxx.jpg，
+        # 而 AppDaemon 容器约定把 HA config 挂在 /homeassistant/。
+        # 先尝试原路径，再回退到 /homeassistant/ 翻译路径，避免硬编码。
+        read_path = local_path
+        if not os.path.isfile(read_path):
+            alt_path = local_path.replace("/config/", "/homeassistant/", 1)
+            if alt_path != local_path and os.path.isfile(alt_path):
+                read_path = alt_path
+            else:
+                self.log(
+                    f"OSS 上传跳过: 文件不存在 {local_path}（也尝试了 {alt_path}）| "
+                    f"request_id={request_id}",
+                    level="WARNING",
+                )
+                return None
+
+        try:
+            filename = os.path.basename(read_path)
+            key = f"{self.oss_key_prefix}{filename}"
+
+            with open(read_path, "rb") as f:
+                body = f.read()
+
+            content_type = (
+                mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            )
+            content_md5 = base64.b64encode(hashlib.md5(body).digest()).decode("ascii")
+            date_str = formatdate(usegmt=True)
+            canonical_resource = f"/{self.oss_bucket}/{key}"
+
+            # 自定义 OSS 头需要按 key 字典序进入 CanonicalizedOSSHeaders
+            # 这里设置对象 ACL 为 public-read，让钉钉 / 微信 等外部客户端可直接访问
+            oss_headers = {"x-oss-object-acl": "public-read"}
+            canonical_oss_headers = "".join(
+                f"{k}:{v}\n" for k, v in sorted(oss_headers.items())
+            )
+
+            string_to_sign = (
+                f"PUT\n{content_md5}\n{content_type}\n{date_str}\n"
+                f"{canonical_oss_headers}{canonical_resource}"
+            )
+            signature = base64.b64encode(
+                hmac.new(
+                    self.oss_access_key_secret.encode("utf-8"),
+                    string_to_sign.encode("utf-8"),
+                    digestmod=hashlib.sha1,
+                ).digest()
+            ).decode("ascii")
+
+            put_url = f"https://{self.oss_bucket}.{self.oss_endpoint}/{key}"
+            req = urllib.request.Request(
+                put_url,
+                data=body,
+                method="PUT",
+                headers={
+                    "Content-Type": content_type,
+                    "Content-MD5": content_md5,
+                    "Date": date_str,
+                    "Authorization": f"OSS {self.oss_access_key_id}:{signature}",
+                    "Content-Length": str(len(body)),
+                    **oss_headers,
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                status = resp.status if hasattr(resp, "status") else resp.getcode()
+                if status in (200, 201):
+                    download_url = f"{self.oss_download_url.rstrip('/')}/{key}"
+                    self.log(
+                        f"OSS 上传成功 | request_id={request_id} "
+                        f"key={key} url={download_url}"
+                    )
+                    return download_url
+                self.log(
+                    f"OSS 上传状态异常 status={status} | request_id={request_id}",
+                    level="ERROR",
+                )
+                return None
+
+        except Exception as e:
+            self.log(
+                f"OSS 上传失败 | request_id={request_id} error={e}",
+                level="ERROR",
+            )
+            return None
 
     # ══════════════════════════════════════════════════════════
     #  iOS Companion App 推送通道
