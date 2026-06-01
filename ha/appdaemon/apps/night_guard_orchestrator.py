@@ -20,7 +20,7 @@ def is_in_alert_window(window_start, window_end, now):
     规则：
     - window_start == window_end → 空区间，始终 False
     - window_start < window_end → 非跨天，标准半开区间判断
-    - window_start > window_end → 跨天（如 23:00~07:30），now >= start 或 now < end
+    - window_start > window_end → 跨天（如 23:00~07:00），now >= start 或 now < end
     """
     if window_start == window_end:
         return False

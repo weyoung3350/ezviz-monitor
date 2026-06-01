@@ -15,7 +15,7 @@
   - `event.xiaomi_cn_1150511669_s20pro_lock_event_e_2_1020`
   - 操作方式 = `9`
   - 锁动作 = `2`
-- 告警时段默认：`23:00 ~ 07:30`
+- 告警时段默认：`00:00 ~ 07:00`
 - 电梯厅摄像头默认实体：`camera.dian_ti_ting_mainstream`
 - 当前主通道：钉钉自定义机器人（加签） + iOS Companion App 推送 + 阿里云 VMS 电话；Telegram 已于 2026-04-11 移除
 - 同一门锁告警规则默认 5 分钟冷却

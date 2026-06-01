@@ -246,9 +246,9 @@ async def test_guard_enabled_none_defaults_to_true(mock_hass_app):
 async def test_check_window_inside(mock_hass_app):
     async def fake_get_state(entity):
         if "start" in entity:
-            return "23:00:00"
+            return "00:00:00"
         if "end" in entity:
-            return "07:30:00"
+            return "07:00:00"
         return None
 
     mock_hass_app.get_state = AsyncMock(side_effect=fake_get_state)
@@ -259,9 +259,9 @@ async def test_check_window_inside(mock_hass_app):
 async def test_check_window_outside(mock_hass_app):
     async def fake_get_state(entity):
         if "start" in entity:
-            return "23:00:00"
+            return "00:00:00"
         if "end" in entity:
-            return "07:30:00"
+            return "07:00:00"
         return None
 
     mock_hass_app.get_state = AsyncMock(side_effect=fake_get_state)
@@ -280,9 +280,9 @@ async def test_check_window_handles_time_only_format(mock_hass_app):
     """HH:MM 格式（无秒）也应正确解析。"""
     async def fake_get_state(entity):
         if "start" in entity:
-            return "23:00"
+            return "00:00"
         if "end" in entity:
-            return "07:30"
+            return "07:00"
         return None
 
     mock_hass_app.get_state = AsyncMock(side_effect=fake_get_state)

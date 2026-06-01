@@ -121,11 +121,11 @@ orchestrator 不再读原始门锁实体属性。automation 已完成三元组�
 | 实体 | 类型 | 用途 | 默认值 |
 |---|---|---|---|
 | `input_boolean.night_guard_enabled` | boolean | 告警总开关 | `on` |
-| `input_datetime.night_guard_start` | time-only | 告警开始时间 | `23:00:00` |
-| `input_datetime.night_guard_end` | time-only | 告警结束时间 | `07:30:00` |
+| `input_datetime.night_guard_start` | time-only | 告警开始时间 | `00:00:00` |
+| `input_datetime.night_guard_end` | time-only | 告警结束时间 | `07:00:00` |
 | `input_datetime.last_night_unlock_alert_at` | datetime | 冷却时间戳（**现有**，不改） | — |
 
-跨天逻辑：当 `start > end` 时视为跨天时段（如 23:00~07:30），支持 `now >= start or now < end` 判断。
+跨天逻辑：当 `start > end` 时视为跨天时段（如 23:00~07:00），支持 `now >= start or now < end` 判断；当前默认 `00:00~07:00` 不是跨天区间。
 
 ### 4.2 apps.yaml（技术参数）
 
@@ -552,8 +552,8 @@ def fixed_now():
 | `_guard_enabled` | helper 返回 "on" | True |
 | `_guard_enabled` | helper 返回 "off" | False |
 | `_guard_enabled` | helper 返回 None / unavailable | True（默认放行） |
-| `_check_window` | mock helper 返回 23:00 / 07:30，now=01:37 | True |
-| `_check_window` | mock helper 返回 23:00 / 07:30，now=12:00 | False |
+| `_check_window` | mock helper 返回 00:00 / 07:00，now=01:37 | True |
+| `_check_window` | mock helper 返回 00:00 / 07:00，now=12:00 | False |
 | `_check_cooldown` | last_alert 为 unknown | True |
 | `_check_cooldown` | last_alert 距今 100 秒，冷却 300 秒 | False |
 | `_update_cooldown` | 调用后 call_service 被正确调用 | call_args 断言 |
@@ -632,13 +632,13 @@ input_datetime:
     name: "告警开始时间"
     has_date: false
     has_time: true
-    initial: "23:00:00"
+    initial: "00:00:00"
     icon: mdi:clock-start
   night_guard_end:
     name: "告警结束时间"
     has_date: false
     has_time: true
-    initial: "07:30:00"
+    initial: "07:00:00"
     icon: mdi:clock-end
   # last_night_unlock_alert_at 已存在（由 H02 旧自动化创建），本次不动
 ```
@@ -811,8 +811,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 
 ```
 input_boolean.night_guard_enabled: on
-input_datetime.night_guard_start: 23:00:00
-input_datetime.night_guard_end: 07:30:00
+input_datetime.night_guard_start: 00:00:00
+input_datetime.night_guard_end: 07:00:00
 ```
 
 ### 12.5 已知现象（非 bug）
@@ -1457,9 +1457,9 @@ async def test_check_window_inside(mock_hass_app):
 
     async def fake_get_state(entity):
         if "start" in entity:
-            return "23:00:00"
+            return "00:00:00"
         if "end" in entity:
-            return "07:30:00"
+            return "07:00:00"
         return None
 
     mock_hass_app.get_state = AsyncMock(side_effect=fake_get_state)
@@ -1473,9 +1473,9 @@ async def test_check_window_outside(mock_hass_app):
 
     async def fake_get_state(entity):
         if "start" in entity:
-            return "23:00:00"
+            return "00:00:00"
         if "end" in entity:
-            return "07:30:00"
+            return "07:00:00"
         return None
 
     mock_hass_app.get_state = AsyncMock(side_effect=fake_get_state)
@@ -2302,13 +2302,13 @@ input_datetime:
     name: "告警开始时间"
     has_date: false
     has_time: true
-    initial: "23:00:00"
+    initial: "00:00:00"
     icon: mdi:clock-start
   night_guard_end:
     name: "告警结束时间"
     has_date: false
     has_time: true
-    initial: "07:30:00"
+    initial: "07:00:00"
     icon: mdi:clock-end
   # last_night_unlock_alert_at 已存在（由旧 H02 创建），不在此重复定义
 EOF
